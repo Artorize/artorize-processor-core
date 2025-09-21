@@ -179,3 +179,5 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+outputs/mask_test_real_image/reconstructed.png
+outputs/mask_test_real_image/mask_lo.png
