@@ -275,7 +275,7 @@ def _apply_layers(
             "mask_path": str(mask_path.resolve()),
         })
         last_stage_path = stage_path
-        previous_saved = saved_image.convert(\"RGB\")
+        previous_saved = saved_image.convert("RGB")
 
     if config.enable_c2pa_manifest:
         c2pa_dir = target_dir / "c2pa"
