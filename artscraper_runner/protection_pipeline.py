@@ -291,12 +291,22 @@ def _apply_layers(
                 manifest_config=config.c2pa_manifest,
                 asset_id=image_path.stem,
             )
+            signed_path = Path(c2pa_result["signed_path"])
+            mask_filename = f"{image_path.stem}_c2pa-manifest_mask.png"
+            mask_path = c2pa_dir / mask_filename
+            with Image.open(signed_path) as final_image:
+                final_image.load()
+                final_rgb = final_image.convert("RGB")
+            mask_image = _generate_layer_mask(previous_saved, final_rgb)
+            mask_image.save(mask_path, format="PNG")
+            previous_saved = final_rgb
+            last_stage_path = signed_path
             stages.append({
                 "stage": "c2pa-manifest",
                 "description": "Embedded C2PA AI training manifest and IPTC signal",
-                "path": str(Path(c2pa_result["signed_path"]).resolve()),
+                "path": str(signed_path.resolve()),
                 "processing_size": list(original.size),
-                "mask_path": None,
+                "mask_path": str(mask_path.resolve()),
                 "manifest_path": str(Path(c2pa_result["manifest_path"]).resolve()),
                 "certificate_path": str(Path(c2pa_result["certificate_path"]).resolve()),
                 "license_path": (
@@ -307,13 +317,26 @@ def _apply_layers(
                 "xmp_path": str(Path(c2pa_result["xmp_path"]).resolve()),
             })
         except Exception as exc:
+            fallback_path = source_for_manifest.resolve(strict=False)
+            mask_filename = f"{image_path.stem}_c2pa-manifest_mask.png"
+            mask_path = c2pa_dir / mask_filename
+            try:
+                with Image.open(fallback_path) as fallback_image:
+                    fallback_image.load()
+                    fallback_rgb = fallback_image.convert("RGB")
+            except Exception:
+                fallback_rgb = previous_saved
+            mask_image = _generate_layer_mask(previous_saved, fallback_rgb)
+            mask_image.save(mask_path, format="PNG")
+            previous_saved = fallback_rgb
             stages.append({
                 "stage": "c2pa-manifest",
                 "description": "Attempted to embed C2PA manifest",
                 "error": str(exc),
-                "path": None,
+                "path": str(fallback_path),
                 "processing_size": list(original.size),
-                "mask_path": None,
+                "mask_path": str(mask_path.resolve()),
+                "artifact_dir": str(c2pa_dir.resolve()),
             })
 
     return stages
@@ -356,10 +379,14 @@ def _build_project_status(
             else:
                 record["notes"] = (record.get("notes") or "") + " Processor unavailable."
         elif key and key in stage_index:
+            stage_record = stage_index[key]
+            applied = not stage_record.get("error")
             record.update({
-                "applied": True,
-                "layer_path": stage_index[key]["path"],
+                "applied": applied,
+                "layer_path": stage_record.get("path"),
             })
+            if stage_record.get("error"):
+                record["error"] = stage_record["error"]
         else:
             record.setdefault("notes", project.get("notes"))
         statuses.append(record)
