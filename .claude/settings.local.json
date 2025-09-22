@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Bash(pip --version)",
+      "Bash(pytest:*)",
+      "Bash($env:PYTHONPATH='.')",
+      "Bash(python -m pytest tests/test_gpu_pipeline.py::test_mona_lisa_processing -v -s)",
+      "Bash(powershell:*)",
+      "Bash(python:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
