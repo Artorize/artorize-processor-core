@@ -14,7 +14,7 @@ OUTPUTS_ROOT = (ROOT / "outputs").resolve()
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from artscraper_gateway import GatewayConfig, create_app
+from artorize_gateway import GatewayConfig, create_app
 
 
 INPUT_IMAGE = Path("input") / "Mona_Lisa,_by_Leonardo_da_Vinci,_from_C2RMF_retouched.jpg"

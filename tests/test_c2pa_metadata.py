@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from artscraper_runner.c2pa_metadata import C2PAManifestConfig
+from artorize_runner.c2pa_metadata import C2PAManifestConfig
 
 
 def test_manifest_has_training_and_license_labels():

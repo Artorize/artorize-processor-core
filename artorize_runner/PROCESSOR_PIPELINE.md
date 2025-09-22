@@ -37,7 +37,7 @@ py -3 -m artscraper_runner.protection_pipeline
 or on POSIX shells:
 
 ```bash
-python -m artscraper_runner.protection_pipeline
+python -m artorize_runner.protection_pipeline
 ```
 
 The script prints a JSON summary listing every processed image, its output directory, and the summary file path. By default it:
@@ -50,7 +50,7 @@ Import and call `run_full_workflow` if you need to customise directories or togg
 
 ```python
 from pathlib import Path
-from artscraper_runner.protection_pipeline import run_full_workflow
+from artorize_runner.protection_pipeline import run_full_workflow
 
 run_full_workflow(
     input_dir=Path("/path/to/images"),
@@ -63,7 +63,7 @@ run_full_workflow(
 - Pass a custom `ProtectionWorkflowConfig` when you want to switch layers (e.g., enable the tree-ring watermark or the stegano export stage).
 
 ```python
-from artscraper_runner.protection_pipeline import ProtectionWorkflowConfig, run_full_workflow
+from artorize_runner.protection_pipeline import ProtectionWorkflowConfig, run_full_workflow
 
 config = ProtectionWorkflowConfig(
     watermark_strategy="tree-ring",

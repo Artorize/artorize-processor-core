@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from artscraper_runner.protection_pipeline import run_full_workflow
+from artorize_runner.protection_pipeline import run_full_workflow
 
 
 def test_run_full_workflow_creates_layers_and_summary():

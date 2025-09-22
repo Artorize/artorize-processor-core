@@ -17,13 +17,13 @@ from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, UploadFil
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from artscraper_runner.cli import build_processors
-from artscraper_runner.core import BaseProcessor, run_pipeline, dumps_json
-from artscraper_runner.protection_pipeline import (
+from artorize_runner.cli import build_processors
+from artorize_runner.core import BaseProcessor, run_pipeline, dumps_json
+from artorize_runner.protection_pipeline import (
     _apply_layers,
     _build_project_status,
 )
-from artscraper_runner.utils import extend_sys_path
+from artorize_runner.utils import extend_sys_path
 
 
 STATUS_QUEUED = "queued"

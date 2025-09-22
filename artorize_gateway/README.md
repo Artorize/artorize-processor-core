@@ -27,8 +27,9 @@ Environment / CLI configuration is derived from `GatewayConfig`:
 - `request_timeout` (default `30` seconds): timeout for URL downloads.
 
 You can create a custom launcher that tweaks these values:
+
 ```python
-from artscraper_gateway import GatewayConfig, create_app
+from artorize_gateway import GatewayConfig, create_app
 
 config = GatewayConfig(worker_concurrency=2)
 app = create_app(config)
