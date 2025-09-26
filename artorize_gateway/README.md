@@ -1,77 +1,105 @@
-# Artscraper Gateway
+# Artorize Gateway
 
-`artscraper_gateway` exposes the Artscraper pipelines over a lightweight FastAPI service. Any web UI, router firmware, or automation script can upload an image, let the existing processors run, and download the resulting JSON and layer images without touching Python internals.
+FastAPI HTTP server that exposes the Artorize protection pipeline as a web service. Allows web UIs, router firmware, or automation scripts to submit images and retrieve protected results.
 
 ## Features
-- Async job queue backed by the same processors used by `artscraper_runner`.
-- Accepts direct uploads, URLs, or local file references.
-- Stores every run under `outputs/<job-id>/` with consistent naming.
-- Optional hashing/stegano analysis and protection stages per request.
-- Minimal dependencies (`fastapi`, `uvicorn`, `httpx`, `aiofiles`, `python-multipart`).
+
+- **Async job queue** - Non-blocking image processing with status polling
+- **Multiple input methods** - File uploads, URLs, or local file paths
+- **Processor control** - Selectively enable/disable analysis and protection layers
+- **Organized outputs** - Results stored under `outputs/<job-id>/` with consistent naming
+- **Lightweight dependencies** - FastAPI, uvicorn, httpx, aiofiles
 
 ## Installation
-From the repository root:
-```
-python -m pip install fastapi uvicorn aiofiles httpx python-multipart
-```
-You can manage these in a virtual environment if preferred.
 
-## Running the Service
+```powershell
+py -3 -m pip install fastapi uvicorn aiofiles httpx python-multipart
 ```
-python -m artscraper_gateway --host 0.0.0.0 --port 8765
+
+## Usage
+
+### Start Server
+```powershell
+py -3 -m artorize_gateway --host 0.0.0.0 --port 8000
 ```
-Environment / CLI configuration is derived from `GatewayConfig`:
-- `base_dir` (default `gateway_jobs/`): where uploads are staged per job.
-- `output_parent` (default `outputs/`): parent directory for job artefacts.
-- `worker_concurrency` (default `1`): number of background workers.
-- `request_timeout` (default `30` seconds): timeout for URL downloads.
 
-You can create a custom launcher that tweaks these values:
+### Configuration
+Set via environment variables or custom `GatewayConfig`:
 
+- `base_dir` (default: `gateway_jobs/`) - Temporary upload storage
+- `output_parent` (default: `outputs/`) - Final output directory
+- `worker_concurrency` (default: `1`) - Background worker threads
+- `request_timeout` (default: `30s`) - URL download timeout
+
+### Custom Configuration
 ```python
 from artorize_gateway import GatewayConfig, create_app
 
-config = GatewayConfig(worker_concurrency=2)
+config = GatewayConfig(worker_concurrency=4)
 app = create_app(config)
 ```
-Then point uvicorn/gunicorn at the `app` object.
 
-## API Summary
-| Method | Path | Notes |
-| --- | --- | --- |
-| POST | `/v1/jobs` | Multipart (`file`) or JSON (`image_url`/`local_path`). Optional fields: `processors`, `include_hash_analysis`, `include_protection`, `enable_tineye`. |
-| GET | `/v1/jobs/{job_id}` | Returns job status (`queued`, `running`, `done`, `error`) and timestamps. |
-| GET | `/v1/jobs/{job_id}/result` | Returns the aggregated summary, optional analysis payload, and the absolute output directory. |
-| GET | `/v1/jobs/{job_id}/layers/{stage}` | Streams a processed image (`original`, `fawkes`, etc.). |
-| DELETE | `/v1/jobs/{job_id}` | Removes intake/output directories after retrieval. |
+## API Endpoints
 
-A complete walkthrough with `curl` examples lives in [`ARTSCRAPER_WEB_INTEGRATION.md`](../ARTSCRAPER_WEB_INTEGRATION.md).
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/jobs` | Submit image (multipart or JSON) |
+| `GET` | `/v1/jobs/{job_id}` | Check job status |
+| `GET` | `/v1/jobs/{job_id}/result` | Get complete results |
+| `GET` | `/v1/jobs/{job_id}/layers/{stage}` | Download layer image |
+| `DELETE` | `/v1/jobs/{job_id}` | Clean up job files |
 
-## Output Layout
-Every successful job produces:
+### Example Usage
+
+```bash
+# Submit image file
+curl -F "file=@image.jpg" -F "include_protection=true" http://localhost:8000/v1/jobs
+
+# Submit by URL
+curl -X POST http://localhost:8000/v1/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"image_url": "https://example.com/image.jpg"}'
+
+# Check status
+curl http://localhost:8000/v1/jobs/{job_id}
+
+# Download protected image
+curl http://localhost:8000/v1/jobs/{job_id}/layers/nightshade -o protected.jpg
 ```
-outputs/
-  <job-id>/
-    summary.json
-    analysis.json         # present when include_hash_analysis=true
-    layers/
-      00-original/<image>
-      01-fawkes/<image>
-      02-photoguard/<image>
-      03-mist/<image>
-      04-nightshade/<image>
-      05-invisible-watermark/<image>
+
+## API Documentation
+
+When running, interactive documentation is available at:
+- **Swagger UI**: `http://localhost:8000/docs`
+- **ReDoc**: `http://localhost:8000/redoc`
+
+For complete API reference, see `../documentation-processor.md`.
+
+## Output Structure
+
 ```
-Uploads are kept in `gateway_jobs/<job-id>/input/` until the job is deleted.
+outputs/<job-id>/
+├── summary.json          # Processing manifest
+├── analysis.json         # Hash analysis (optional)
+├── layers/
+│   ├── 00-original/      # Unmodified input
+│   ├── 01-fawkes/        # Protection layers
+│   ├── 02-photoguard/
+│   ├── 03-mist/
+│   ├── 04-nightshade/
+│   └── 05-invisible-watermark/
+└── c2pa/                 # C2PA manifest files
+```
 
 ## Testing
-```
-pytest -q artscraper_gateway/tests
-```
-The tests submit the Mona Lisa sample from `input/`, verify job status transitions, ensure artefacts land under `outputs/`, and exercise the deletion endpoint.
 
-## Integration Tips
-- Set `TINEYE_API_KEY` before launch if you want TinEye lookups.
-- Scale `worker_concurrency` cautiously; the heavy lifting happens in Pillow/NumPy and runs in threads via `asyncio.to_thread`.
-- Pair the service with a reverse proxy if you need HTTPS or authentication.
-- Monitor disk usage in `outputs/` and consider scheduling `DELETE` calls once clients collect their files.
+```powershell
+pytest -q artorize_gateway/tests
+```
+
+## Production Notes
+
+- Set `TINEYE_API_KEY` environment variable for reverse image search
+- Use reverse proxy (nginx/Caddy) for HTTPS and authentication
+- Monitor disk usage in `outputs/` directory
+- Scale `worker_concurrency` based on available CPU cores
