@@ -14,6 +14,13 @@ from .core import run_pipeline, dumps_json
 from .utils import extend_sys_path
 from .c2pa_metadata import C2PAManifestConfig, embed_c2pa_manifest
 
+# Import poison mask processor functions
+try:
+    from processors.poison_mask.processor import compute_mask, build_metadata
+    POISON_MASK_AVAILABLE = True
+except ImportError:
+    POISON_MASK_AVAILABLE = False
+
 @dataclass
 class ProtectionStage:
     """Represents a single protection transformation layer."""
@@ -38,6 +45,9 @@ class ProtectionWorkflowConfig:
     stegano_message: str = "Protected by artscraper"
     enable_c2pa_manifest: bool = True
     c2pa_manifest: C2PAManifestConfig = field(default_factory=C2PAManifestConfig)
+    enable_poison_mask: bool = True
+    poison_mask_filter_id: str = "poison-mask"
+    poison_mask_css_class: str = "poisoned-image"
 
 
 
@@ -166,7 +176,101 @@ def _build_stage_sequence(config: ProtectionWorkflowConfig) -> Sequence[Protecti
     return stages
 
 
-def _generate_layer_mask(previous: Image.Image, current: Image.Image) -> Image.Image:
+def _apply_poison_mask_if_enabled(
+    image: Image.Image,
+    original: Image.Image,
+    config: ProtectionWorkflowConfig,
+    target_dir: Path,
+    stage_name: str
+) -> Optional[Dict[str, object]]:
+    """Apply poison mask processor if enabled and available."""
+    if not config.enable_poison_mask or not POISON_MASK_AVAILABLE:
+        return None
+
+    try:
+        # Create poison mask directory
+        poison_dir = target_dir / "poison_mask"
+        poison_dir.mkdir(exist_ok=True)
+
+        # Compute the poison mask
+        mask_result = compute_mask(original, image)
+
+        # Save mask images
+        mask_hi_path = poison_dir / f"{stage_name}_mask_hi.png"
+        mask_lo_path = poison_dir / f"{stage_name}_mask_lo.png"
+        mask_result.hi_image.save(mask_hi_path)
+        mask_result.lo_image.save(mask_lo_path)
+
+        # Build metadata
+        metadata = build_metadata(
+            original_path=Path("original.png"),  # placeholder
+            processed_path=Path("processed.png"),  # placeholder
+            mask_hi_path=mask_hi_path,
+            mask_lo_path=mask_lo_path,
+            size=mask_result.size,
+            diff_stats=mask_result.diff_stats,
+            diff_min=mask_result.diff_min,
+            diff_max=mask_result.diff_max,
+            filter_id=config.poison_mask_filter_id,
+            css_class=config.poison_mask_css_class,
+        )
+
+        # Save metadata
+        metadata_path = poison_dir / f"{stage_name}_poison_metadata.json"
+        metadata_path.write_text(json.dumps(metadata, indent=2))
+
+        return {
+            "poison_mask_hi_path": str(mask_hi_path.resolve()),
+            "poison_mask_lo_path": str(mask_lo_path.resolve()),
+            "poison_metadata_path": str(metadata_path.resolve()),
+            "diff_stats": mask_result.diff_stats,
+        }
+
+    except Exception as exc:
+        print(f"Warning: Poison mask processing failed: {exc}")
+        return None
+
+
+def _generate_layer_mask_from_poison(
+    mask_hi: Image.Image,
+    mask_lo: Image.Image,
+    amplification: float = 4.0
+) -> Image.Image:
+    """Generate visualization mask from poison mask hi/lo planes."""
+    # Convert to grayscale if needed
+    if mask_hi.mode != 'L':
+        mask_hi = mask_hi.convert('L')
+    if mask_lo.mode != 'L':
+        mask_lo = mask_lo.convert('L')
+
+    hi_arr = np.asarray(mask_hi, dtype=np.uint16)
+    lo_arr = np.asarray(mask_lo, dtype=np.uint16)
+
+    # Reconstruct the encoded difference magnitude
+    encoded = (hi_arr << 8) | lo_arr
+    diff_magnitude = np.abs(encoded.astype(np.int32) - 32768)
+
+    # Amplify for visualization and convert to grayscale
+    amplified = np.clip(diff_magnitude * amplification / 128, 0, 255).astype(np.uint8)
+
+    return Image.fromarray(amplified, 'L')
+
+
+def _generate_layer_mask(previous: Image.Image, current: Image.Image, poison_mask_data: Optional[Dict[str, object]] = None) -> Image.Image:
+    """Generate visualization mask, preferring poison mask data if available."""
+    if poison_mask_data and POISON_MASK_AVAILABLE:
+        try:
+            # Use poison mask data for visualization
+            hi_path = Path(poison_mask_data["poison_mask_hi_path"])
+            lo_path = Path(poison_mask_data["poison_mask_lo_path"])
+
+            with Image.open(hi_path) as hi_img, Image.open(lo_path) as lo_img:
+                return _generate_layer_mask_from_poison(hi_img, lo_img)
+
+        except Exception as exc:
+            print(f"Warning: Failed to use poison mask for visualization, falling back to simple diff: {exc}")
+
+    # Fallback to original method
     if previous.size != current.size:
         previous = previous.resize(current.size, resample=Image.Resampling.BICUBIC)
     prev_arr = np.asarray(previous.convert("RGB"), dtype=np.int16)
@@ -193,6 +297,7 @@ PROJECT_CATALOGUE: Sequence[Dict[str, Optional[str]]] = (
     {"name": "Tree-Ring", "stage": "tree-ring", "notes": "Radial provenance watermark (optional)."},
     {"name": "Stegano (embed)", "stage": "stegano-embed", "notes": "Embedded hidden payload at export."},
     {"name": "Stegano (analysis)", "stage": "analysis-stegano", "notes": "Steganography reveal attempted via processor."},
+    {"name": "Poison Mask Processor", "stage": "poison-mask", "notes": "High-fidelity reconstruction masks with JS snippets."},
     {"name": "CorruptEncoder", "stage": None, "notes": "Framework for poisoning encoders; not run per-image."},
     {"name": "SecMI", "stage": None, "notes": "Membership inference research code; not image-level."},
     {"name": "MIA-diffusion", "stage": None, "notes": "Diffusion membership inference pipeline; not run."},
@@ -262,18 +367,33 @@ def _apply_layers(
         stage_path = layer_dir / image_path.name
         _save_image(saved_image, stage_path, fmt)
 
+        # Apply poison mask processor if enabled
+        poison_mask_data = _apply_poison_mask_if_enabled(
+            image=saved_image,
+            original=previous_saved,
+            config=config,
+            target_dir=target_dir,
+            stage_name=f"{index:02d}-{stage.key}"
+        )
+
         mask_filename = f"{image_path.stem}_{stage.key}_mask.png"
         mask_path = layer_dir / mask_filename
-        mask_image = _generate_layer_mask(previous_saved, saved_image)
+        mask_image = _generate_layer_mask(previous_saved, saved_image, poison_mask_data)
         mask_image.save(mask_path, format="PNG")
 
-        stages.append({
+        stage_data = {
             "stage": stage.key,
             "description": stage.description,
             "path": str(stage_path.resolve()),
             "processing_size": list(current.size),
             "mask_path": str(mask_path.resolve()),
-        })
+        }
+
+        # Add poison mask data to stage info if available
+        if poison_mask_data:
+            stage_data.update(poison_mask_data)
+
+        stages.append(stage_data)
         last_stage_path = stage_path
         previous_saved = saved_image.convert("RGB")
 
@@ -378,6 +498,16 @@ def _build_project_status(
                 })
             else:
                 record["notes"] = (record.get("notes") or "") + " Processor unavailable."
+        elif key == "poison-mask":
+            # Check if any stage has poison mask data
+            poison_applied = any(
+                "poison_mask_hi_path" in stage_record
+                for stage_record in stage_records
+            )
+            record.update({
+                "applied": poison_applied,
+                "evidence": "Poison mask files generated for protection stages." if poison_applied else None,
+            })
         elif key and key in stage_index:
             stage_record = stage_index[key]
             applied = not stage_record.get("error")
