@@ -34,7 +34,9 @@ from .protection_pipeline import (
     PROJECT_CATALOGUE,
     _ensure_directory,
     _save_image,
-    _build_project_status
+    _build_project_status,
+    _apply_poison_mask_if_enabled,
+    _generate_layer_mask
 )
 
 # Global RNG to keep transforms deterministic across runs
@@ -408,13 +410,25 @@ def _apply_layers_batched(
         stage_path = layer_dir / image_path.name
         _save_image(saved_image, stage_path, fmt)
 
+        # Apply poison mask processor if enabled
+        poison_mask_data = _apply_poison_mask_if_enabled(
+            image=saved_image,
+            original=previous_saved,
+            config=config,
+            target_dir=target_dir,
+            stage_name=f"{index:02d}-{stage.key}"
+        )
+
         # Generate mask
         mask_filename = f"{image_path.stem}_{stage.key}_mask.png"
         mask_path = layer_dir / mask_filename
-        mask_image = _generate_layer_mask_gpu(previous_saved, saved_image) if use_gpu else _generate_layer_mask_cpu(previous_saved, saved_image)
+        if poison_mask_data:
+            mask_image = _generate_layer_mask(previous_saved, saved_image, poison_mask_data)
+        else:
+            mask_image = _generate_layer_mask_gpu(previous_saved, saved_image) if use_gpu else _generate_layer_mask_cpu(previous_saved, saved_image)
         mask_image.save(mask_path, format="PNG")
 
-        stages.append({
+        stage_data = {
             "stage": stage.key,
             "description": stage.description,
             "path": str(stage_path.resolve()),
@@ -422,7 +436,13 @@ def _apply_layers_batched(
             "mask_path": str(mask_path.resolve()),
             "processing_time": stage_times[stage.key],
             "gpu_accelerated": use_gpu and TORCH_AVAILABLE
-        })
+        }
+
+        # Add poison mask data to stage info if available
+        if poison_mask_data:
+            stage_data.update(poison_mask_data)
+
+        stages.append(stage_data)
         last_stage_path = stage_path
         previous_saved = saved_image.convert("RGB")
 
@@ -447,7 +467,8 @@ def _apply_layers_batched(
             with Image.open(signed_path) as final_image:
                 final_image.load()
                 final_rgb = final_image.convert("RGB")
-            mask_image = _generate_layer_mask_gpu(previous_saved, final_rgb) if use_gpu else _generate_layer_mask_cpu(previous_saved, final_rgb)
+            # For C2PA manifest, use the regular mask generation function to avoid complexity
+            mask_image = _generate_layer_mask(previous_saved, final_rgb)
             mask_image.save(mask_path, format="PNG")
             stages.append({
                 "stage": "c2pa-manifest",

@@ -9,7 +9,10 @@
       "Bash(powershell:*)",
       "Bash(python:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(py -3 -m artorize_runner.protection_pipeline)",
+      "Bash(cat:*)",
+      "Bash(py:*)"
     ],
     "deny": [],
     "ask": []
