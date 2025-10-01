@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 import aiofiles
-import httpx
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
@@ -24,6 +23,10 @@ from artorize_runner.protection_pipeline import (
     _build_project_status,
 )
 from artorize_runner.utils import extend_sys_path
+from .input_utils import download_to_path, resolve_local_path, parse_comma_separated, boolean_from_form
+from .similarity_routes import router as similarity_router
+from .callback_client import CallbackClient
+from .image_storage import StorageUploader
 
 
 STATUS_QUEUED = "queued"
@@ -38,6 +41,16 @@ class GatewayConfig:
     output_parent: Path = Path("outputs")
     worker_concurrency: int = 1
     request_timeout: float = 30.0
+    # Callback settings
+    callback_timeout: float = 10.0
+    callback_retry_attempts: int = 3
+    callback_retry_delay: float = 2.0
+    # Storage settings
+    storage_type: str = "local"  # "local", "s3", or "cdn"
+    s3_bucket_name: str = "artorizer-protected-images"
+    s3_region: str = "us-east-1"
+    cdn_base_url: str = "https://cdn.artorizer.com"
+    local_storage_base_url: str = "http://localhost:8000/v1/storage"
 
     def resolved_base(self) -> Path:
         path = self.base_dir.resolve()
@@ -74,6 +87,13 @@ class JobRecord:
     submitted_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     result: Optional[JobResult] = None
+    # Callback support
+    callback_url: Optional[str] = None
+    callback_auth_token: Optional[str] = None
+    artist_name: Optional[str] = None
+    artwork_title: Optional[str] = None
+    watermark_strategy: Optional[str] = None
+    watermark_strength: Optional[float] = None
 
     def touch(self, status: Optional[str] = None, error: Optional[str] = None) -> None:
         if status:
@@ -89,6 +109,8 @@ class GatewayState:
     queue: asyncio.Queue[str]
     jobs: Dict[str, JobRecord]
     workers: List[asyncio.Task]
+    callback_client: Optional[CallbackClient] = None
+    storage_uploader: Optional[StorageUploader] = None
 
 
 class JobStatusResponse(BaseModel):
@@ -120,21 +142,25 @@ class JobPayload(BaseModel):
     enable_tineye: Optional[bool] = None
 
 
-async def _download_to_path(url: str, dest: Path, timeout: float) -> None:
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        async with client.stream("GET", url) as response:
-            response.raise_for_status()
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            async with aiofiles.open(dest, "wb") as out:
-                async for chunk in response.aiter_bytes():
-                    await out.write(chunk)
+class ArtworkMetadata(BaseModel):
+    """Metadata for artwork processing with callback support."""
+    job_id: str
+    artist_name: Optional[str] = None
+    artwork_title: Optional[str] = None
+    callback_url: str
+    callback_auth_token: str
+    processors: Optional[Sequence[str]] = None
+    watermark_strategy: Optional[str] = None
+    watermark_strength: Optional[float] = None
+    tags: Optional[Sequence[str]] = None
 
 
-def _resolve_local_path(raw: str) -> Path:
-    path = Path(raw).expanduser().resolve()
-    if not path.is_file():
-        raise FileNotFoundError(f"local file not found: {path}")
-    return path
+class ProcessArtworkResponse(BaseModel):
+    """Response for artwork processing submission."""
+    job_id: str
+    status: str
+    estimated_time_seconds: Optional[int] = None
+    message: str
 
 
 def _filter_processors(processors: List[BaseProcessor], allowed: Optional[Sequence[str]]) -> List[BaseProcessor]:
@@ -208,6 +234,109 @@ def _process_job(job: JobRecord) -> JobResult:
     )
 
 
+async def _send_callback_on_completion(
+    job: JobRecord,
+    result: Optional[JobResult],
+    error: Optional[str],
+    state: GatewayState,
+) -> None:
+    """Send callback to Router after job completion."""
+    if not job.callback_url or not job.callback_auth_token or not state.callback_client:
+        return
+
+    start_time = job.submitted_at
+    end_time = job.updated_at
+    processing_time_ms = int((end_time - start_time).total_seconds() * 1000)
+
+    if error:
+        # Send error callback
+        payload = {
+            "job_id": job.job_id,
+            "status": "failed",
+            "processing_time_ms": processing_time_ms,
+            "error": {
+                "code": "PROCESSING_FAILED",
+                "message": error,
+            },
+        }
+    elif result and state.storage_uploader:
+        # Upload to storage and send success callback
+        try:
+            # Find the final protected image (last layer)
+            final_layer_path = None
+            if result.summary.get("layers"):
+                layers = result.summary["layers"]
+                if layers:
+                    final_layer_path = Path(layers[-1].get("path", ""))
+
+            if not final_layer_path or not final_layer_path.exists():
+                raise RuntimeError("Final protected image not found")
+
+            # Upload to storage
+            storage_urls = await state.storage_uploader.upload_protected_image(
+                final_layer_path,
+                job.job_id,
+                image_format="jpeg",
+            )
+
+            # Extract hashes from analysis
+            hashes = {}
+            if result.analysis:
+                for proc_result in result.analysis.get("results", []):
+                    if proc_result.get("processor") == "imagehash":
+                        hashes = proc_result.get("data", {}).get("hashes", {})
+                        break
+
+            # Build success payload
+            payload = {
+                "job_id": job.job_id,
+                "status": "completed",
+                "processing_time_ms": processing_time_ms,
+                "result": {
+                    "protected_image_url": storage_urls["protected_image_url"],
+                    "thumbnail_url": storage_urls["thumbnail_url"],
+                    "hashes": hashes,
+                    "metadata": {
+                        "artist_name": job.artist_name,
+                        "artwork_title": job.artwork_title,
+                    },
+                    "watermark": {
+                        "strategy": job.watermark_strategy or "invisible-watermark",
+                        "strength": job.watermark_strength or 0.5,
+                    },
+                },
+            }
+        except Exception as e:
+            # Storage upload failed, send error
+            payload = {
+                "job_id": job.job_id,
+                "status": "failed",
+                "processing_time_ms": processing_time_ms,
+                "error": {
+                    "code": "STORAGE_UPLOAD_FAILED",
+                    "message": str(e),
+                },
+            }
+    else:
+        # No result, unexpected error
+        payload = {
+            "job_id": job.job_id,
+            "status": "failed",
+            "processing_time_ms": processing_time_ms,
+            "error": {
+                "code": "UNKNOWN_ERROR",
+                "message": "Processing completed but no result available",
+            },
+        }
+
+    # Send callback
+    await state.callback_client.send_completion_callback(
+        job.callback_url,
+        job.callback_auth_token,
+        payload,
+    )
+
+
 async def _worker_loop(state: GatewayState) -> None:
     while True:
         try:
@@ -223,17 +352,17 @@ async def _worker_loop(state: GatewayState) -> None:
             result = await asyncio.to_thread(_process_job, job)
         except Exception as exc:  # noqa: BLE001
             job.touch(status=STATUS_ERROR, error=str(exc))
+            # Send callback if enabled
+            await _send_callback_on_completion(job, None, str(exc), state)
         else:
             job.result = result
             job.touch(status=STATUS_DONE)
+            # Send callback if enabled
+            await _send_callback_on_completion(job, result, None, state)
         finally:
             state.queue.task_done()
 
 
-def _boolean_from_form(value: Optional[str], default: bool) -> bool:
-    if value is None:
-        return default
-    return value.lower() in {"1", "true", "yes", "on"}
 
 
 async def _create_job_from_multipart(
@@ -263,18 +392,16 @@ async def _create_job_from_multipart(
                 break
             await out.write(chunk)
 
-    processor_names: Optional[List[str]] = None
-    if processors:
-        processor_names = [part.strip() for part in processors.split(",") if part.strip()]
+    processor_names = parse_comma_separated(processors)
 
     record = JobRecord(
         job_id=job_id,
         input_path=stored_path,
         input_dir=input_dir,
         output_root=output_root,
-        include_hash_analysis=_boolean_from_form(include_hash_analysis, True),
-        include_protection=_boolean_from_form(include_protection, True),
-        enable_tineye=_boolean_from_form(enable_tineye, False),
+        include_hash_analysis=boolean_from_form(include_hash_analysis, True),
+        include_protection=boolean_from_form(include_protection, True),
+        enable_tineye=boolean_from_form(enable_tineye, False),
         processors=processor_names,
     )
     state.jobs[job_id] = record
@@ -297,14 +424,14 @@ async def _create_job_from_payload(payload: JobPayload, state: GatewayState) -> 
     output_root = output_parent / job_id
 
     if payload.local_path:
-        source = _resolve_local_path(payload.local_path)
+        source = resolve_local_path(payload.local_path)
         suffix = source.suffix or ".bin"
         stored_path = input_dir / f"{job_id}{suffix}"
         shutil.copy2(source, stored_path)
     else:
         suffix = Path(payload.image_url).suffix or ".bin"
         stored_path = input_dir / f"{job_id}{suffix}"
-        await _download_to_path(payload.image_url, stored_path, timeout=config.request_timeout)
+        await download_to_path(payload.image_url, stored_path, timeout=config.request_timeout)
 
     record = JobRecord(
         job_id=job_id,
@@ -324,6 +451,23 @@ async def _create_job_from_payload(payload: JobPayload, state: GatewayState) -> 
 def create_app(config: Optional[GatewayConfig] = None) -> FastAPI:
     cfg = config or GatewayConfig()
     state = GatewayState(config=cfg, queue=asyncio.Queue(), jobs={}, workers=[])
+
+    # Initialize callback client
+    state.callback_client = CallbackClient(
+        timeout=cfg.callback_timeout,
+        retry_attempts=cfg.callback_retry_attempts,
+        retry_delay=cfg.callback_retry_delay,
+    )
+
+    # Initialize storage uploader
+    state.storage_uploader = StorageUploader(
+        storage_type=cfg.storage_type,
+        s3_bucket_name=cfg.s3_bucket_name,
+        s3_region=cfg.s3_region,
+        cdn_base_url=cfg.cdn_base_url,
+        local_storage_base_url=cfg.local_storage_base_url,
+        output_dir=cfg.resolved_output_parent(),
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):  # noqa: ANN001
@@ -345,6 +489,9 @@ def create_app(config: Optional[GatewayConfig] = None) -> FastAPI:
             state.workers.clear()
 
     app = FastAPI(title="Artscraper Gateway", version="0.1.0", lifespan=lifespan)
+
+    # Include similarity search routes
+    app.include_router(similarity_router)
 
     def get_state() -> GatewayState:
         return state
@@ -371,6 +518,79 @@ def create_app(config: Optional[GatewayConfig] = None) -> FastAPI:
         if payload is not None:
             return await _create_job_from_payload(payload, state)
         raise HTTPException(status_code=400, detail="file upload or JSON payload required")
+
+    @app.post("/v1/process/artwork", response_model=ProcessArtworkResponse, status_code=202)
+    async def process_artwork(
+        state: GatewayState = Depends(get_state),
+        file: UploadFile = File(None),
+        metadata: Optional[str] = Form(None),
+    ) -> ProcessArtworkResponse:
+        """
+        Process artwork with callback support.
+        Accepts multipart form-data with image file and metadata JSON.
+        """
+        if not file:
+            raise HTTPException(status_code=400, detail="image file required")
+
+        # Parse metadata
+        if not metadata:
+            raise HTTPException(status_code=400, detail="metadata JSON required")
+
+        try:
+            import json as json_lib
+            metadata_dict = json_lib.loads(metadata)
+            artwork_meta = ArtworkMetadata(**metadata_dict)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid metadata: {e}")
+
+        # Create job directory
+        config = state.config
+        base_dir = config.resolved_base()
+        output_parent = config.resolved_output_parent()
+
+        job_id = artwork_meta.job_id
+        job_dir = base_dir / job_id
+        input_dir = job_dir / "input"
+        input_dir.mkdir(parents=True, exist_ok=True)
+        output_root = output_parent / job_id
+
+        # Save uploaded file
+        suffix = Path(file.filename or "image").suffix or ".jpg"
+        stored_path = input_dir / f"{job_id}{suffix}"
+        async with aiofiles.open(stored_path, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                await out.write(chunk)
+
+        # Create job record with callback support
+        record = JobRecord(
+            job_id=job_id,
+            input_path=stored_path,
+            input_dir=input_dir,
+            output_root=output_root,
+            include_hash_analysis=True,
+            include_protection=True,
+            enable_tineye=False,
+            processors=artwork_meta.processors,
+            callback_url=artwork_meta.callback_url,
+            callback_auth_token=artwork_meta.callback_auth_token,
+            artist_name=artwork_meta.artist_name,
+            artwork_title=artwork_meta.artwork_title,
+            watermark_strategy=artwork_meta.watermark_strategy,
+            watermark_strength=artwork_meta.watermark_strength,
+        )
+
+        state.jobs[job_id] = record
+        await state.queue.put(job_id)
+
+        return ProcessArtworkResponse(
+            job_id=job_id,
+            status="processing",
+            estimated_time_seconds=45,
+            message="Job queued for processing. Callback will be sent upon completion.",
+        )
 
     @app.get("/v1/jobs/{job_id}", response_model=JobStatusResponse)
     async def get_status(job_id: str, state: GatewayState = Depends(get_state)) -> JobStatusResponse:

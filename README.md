@@ -2,26 +2,32 @@
 
 Image protection pipeline that applies multiple adversarial perturbations (Fawkes, PhotoGuard, Mist, Nightshade) and watermarking techniques to protect images from unauthorized AI training.
 
+## Requirements
+
+**Python Version**: 3.12.10 (required for blockhash compatibility)
+
+> **Note**: This project requires Python 3.12.10 or compatible 3.12.x versions. The `blockhash` library is not compatible with Python 3.13+.
+
 ## Quick Start
 
 ### Installation
 ```powershell
-py -3 -m pip install -r requirements.txt
+py -3.12 -m pip install -r requirements.txt
 ```
 
 ### Basic Usage
 ```powershell
 # Process images from input/ to outputs/
-py -3 -m artorize_runner.protection_pipeline
+py -3.12 -m artorize_runner.protection_pipeline
 
 # GPU-accelerated processing
-py -3 -m artorize_runner.protection_pipeline_gpu
+py -3.12 -m artorize_runner.protection_pipeline_gpu
 
 # Single image analysis
-py -3 -m artorize_runner.cli path\to\image.jpg --json-out report.json
+py -3.12 -m artorize_runner.cli path\to\image.jpg --json-out report.json
 
 # Start HTTP API server
-py -3 -m artorize_gateway --host 0.0.0.0 --port 8000
+py -3.12 -m artorize_gateway --host 0.0.0.0 --port 8000
 ```
 
 ### Testing

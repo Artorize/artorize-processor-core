@@ -2,23 +2,30 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Python Version Requirement
+
+**IMPORTANT**: This project requires Python 3.12.x (specifically 3.12.10 or compatible).
+The `blockhash` library is not compatible with Python 3.13+.
+
+Use `py -3.12` instead of `py -3` for all Python commands.
+
 ## Core Commands
 
 ### Running the Pipeline
 ```powershell
 # Main protection pipeline (processes images from input/ to outputs/)
-py -3 -m artorize_runner.protection_pipeline
+py -3.12 -m artorize_runner.protection_pipeline
 
 # GPU-accelerated pipeline with parallel processing
-py -3 -m artorize_runner.protection_pipeline_gpu
+py -3.12 -m artorize_runner.protection_pipeline_gpu
 
 # GPU pipeline with custom options
-py -3 -m artorize_runner.protection_pipeline_gpu --workers 4 --no-gpu  # Disable GPU
-py -3 -m artorize_runner.protection_pipeline_gpu --multiprocessing     # Use multiprocessing
-py -3 -m artorize_runner.protection_pipeline_gpu --no-analysis        # Skip hash analysis
+py -3.12 -m artorize_runner.protection_pipeline_gpu --workers 4 --no-gpu  # Disable GPU
+py -3.12 -m artorize_runner.protection_pipeline_gpu --multiprocessing     # Use multiprocessing
+py -3.12 -m artorize_runner.protection_pipeline_gpu --no-analysis        # Skip hash analysis
 
 # CLI for single image analysis
-py -3 -m artorize_runner.cli path\to\image.jpg --json-out report.json
+py -3.12 -m artorize_runner.cli path\to\image.jpg --json-out report.json
 ```
 
 ### Testing
@@ -37,7 +44,7 @@ Remove-Item Env:PYTHONPATH
 ### Dependencies
 ```powershell
 # Install all dependencies
-py -3 -m pip install -r requirements.txt
+py -3.12 -m pip install -r requirements.txt
 ```
 
 ## Architecture Overview
