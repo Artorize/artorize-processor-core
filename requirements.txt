@@ -1,25 +1,26 @@
-aiofiles
-blockhash
-c2pa-python
-crayons
-dhash
-fawkes
-fastapi
-google-images-download
-hcaptcha-challenger
-httpx
-imagehash
-invisible-watermark
-numpy
-piexif
-Pillow
-PyWavelets
-python-multipart
-pytineye
-rawpy
-scipy
-Stegano
-uvicorn
-torch>=2.0.0
-torchvision>=0.15.0
-lmdb
+aiofiles==24.1.0
+blockhash==0.1.1
+c2pa-python==0.23.1
+crayons==0.4.0
+dhash==1.4
+# fawkes - incompatible with Python 3.13, requires older numpy
+fastapi==0.117.1
+google-images-download==2.8.0
+hcaptcha-challenger==0.18.10
+httpx==0.28.1
+imagehash==4.3.2
+# invisible-watermark - requires torch which is not available for Python 3.13
+numpy>=1.24.0,<2.0.0  # PyTorch requires numpy 1.x
+piexif==1.1.3
+Pillow==11.3.0
+opencv-python>=4.8.0  # Image processing (compatible with numpy 1.x and 2.x via --no-deps workaround if needed)
+PyWavelets==1.9.0
+python-multipart==0.0.20
+pytineye==3.0.0
+rawpy==0.25.1
+scipy==1.16.2
+Stegano==2.0.0
+uvicorn==0.37.0
+torch>=2.0.0  # GPU acceleration (Python 3.12 compatible)
+torchvision>=0.15.0  # GPU acceleration (Python 3.12 compatible)
+lmdb==1.7.3

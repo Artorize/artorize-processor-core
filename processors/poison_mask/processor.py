@@ -247,7 +247,30 @@ def main() -> None:
     original_image = load_image(original_path)
     processed_image = load_image(processed_path)
 
+    # Added by me
+    # Ensure the output directory exists and save a copy of the processed image
+    # alongside the generated mask files for easy inspection/deployment.
+    output_dir = mask_hi_path.parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+    processed_copy_path = output_dir / processed_path.name
+    # Convert to a JPEG-friendly mode when the copy target is a JPEG.
+    suffix = processed_copy_path.suffix.lower()
+    to_save = processed_image
+    if suffix in (".jpg", ".jpeg"):
+        to_save = processed_image.convert("RGB")
+    to_save.save(processed_copy_path)
+    # Added by me
+
     mask_result = compute_mask(original_image, processed_image)
+    # ensure output dir exists and save packed numeric planes (hi/lo) as compressed .npz
+    output_dir = mask_hi_path.parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+    hi_arr = np.asarray(mask_result.hi_image, dtype=np.uint8)
+    lo_arr = np.asarray(mask_result.lo_image, dtype=np.uint8)
+    planes_npz = output_dir / f"{processed_path.stem}_mask_planes.npz"
+    np.savez_compressed(planes_npz, hi=hi_arr, lo=lo_arr)
+    print(f"wrote {planes_npz}")
+
     mask_result.hi_image.save(mask_hi_path)
     mask_result.lo_image.save(mask_lo_path)
 
