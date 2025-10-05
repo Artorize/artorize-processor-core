@@ -1,7 +1,9 @@
 # Artorize Processor Core - API Documentation
 
 ## API Base URL
-`http://localhost:8000`
+`http://localhost:8765`
+
+**Note:** The default port is 8765 (configurable via `--port` flag when starting the gateway)
 
 ## API Endpoints
 
@@ -297,8 +299,9 @@ When processing completes successfully, a POST request is sent to `callback_url`
   "status": "completed",
   "processing_time_ms": 42350,
   "result": {
-    "protected_image_url": "http://localhost:8000/v1/storage/protected/uuid.jpeg",
-    "thumbnail_url": "http://localhost:8000/v1/storage/thumbnails/uuid_thumb.jpeg",
+    "protected_image_url": "http://localhost:8765/v1/storage/protected/uuid.jpeg",
+    "thumbnail_url": "http://localhost:8765/v1/storage/thumbnails/uuid_thumb.jpeg",
+    "sac_mask_url": "http://localhost:8765/v1/storage/protected/uuid.jpeg.sac",
     "hashes": {
       "perceptual_hash": "0xfedcba0987654321",
       "average_hash": "0x1234567890abcdef",
@@ -315,6 +318,14 @@ When processing completes successfully, a POST request is sent to `callback_url`
   }
 }
 ```
+
+**Callback Payload Fields:**
+- `protected_image_url` (string): Final protected image URL (CDN/S3/local)
+- `thumbnail_url` (string): 300x300 thumbnail URL
+- `sac_mask_url` (string): **SAC-encoded poison mask URL** (NEW - CDN-ready binary format)
+- `hashes` (object): Perceptual hashes for similarity search
+- `metadata` (object): Artist/artwork information
+- `watermark` (object): Watermark strategy and settings
 
 **Callback Payload (Error):**
 
@@ -575,6 +586,212 @@ curl -X POST http://localhost:8000/v1/images/find-similar \
 
 ---
 
+## SAC Encoding Endpoints (Mask Transmission)
+
+SAC (Simple Array Container) is a compact binary format for transmitting poison mask data to CDN/browsers. These endpoints provide fast, efficient encoding of dual int16 arrays.
+
+### 9. Encode Mask Pair (Images)
+```http
+POST /v1/sac/encode
+Content-Type: multipart/form-data
+```
+
+**Purpose:** Encode hi/lo mask image pair into SAC v1 binary format.
+
+**Request Parameters:**
+- `mask_hi` (binary, required): High-byte mask image (PNG/JPEG)
+- `mask_lo` (binary, required): Low-byte mask image (PNG/JPEG)
+
+**Response (200):**
+```
+Content-Type: application/octet-stream
+Cache-Control: public, max-age=31536000, immutable
+X-SAC-Width: 512
+X-SAC-Height: 512
+X-SAC-Length-A: 262144
+X-SAC-Length-B: 262144
+
+[Binary SAC data]
+```
+
+**Performance:** ~5-10ms for 512×512 masks
+
+**Example:**
+```bash
+curl -X POST http://localhost:8765/v1/sac/encode \
+  -F "mask_hi=@mask_hi.png" \
+  -F "mask_lo=@mask_lo.png" \
+  --output output.sac
+```
+
+---
+
+### 10. Encode Mask from NPZ
+```http
+POST /v1/sac/encode/npz
+Content-Type: multipart/form-data
+```
+
+**Purpose:** Encode SAC from pre-computed NumPy arrays (faster for programmatic use).
+
+**Request Parameters:**
+- `npz_file` (binary, required): NPZ file containing 'hi' and 'lo' uint8 arrays
+
+**Response (200):**
+```
+Content-Type: application/octet-stream
+[Binary SAC data with same headers as /encode]
+```
+
+**Performance:** ~2-5ms for 512×512 masks
+
+**Example:**
+```bash
+curl -X POST http://localhost:8765/v1/sac/encode/npz \
+  -F "npz_file=@mask.npz" \
+  --output output.sac
+```
+
+---
+
+### 11. Encode SAC from Job
+```http
+GET /v1/sac/encode/job/{job_id}
+```
+
+**Purpose:** Generate SAC mask from a completed job's mask files.
+
+**Path Parameters:**
+- `job_id` (string, required): Job UUID
+
+**Query Parameters:**
+- `output_parent` (string, optional): Base output directory (default: "outputs/")
+
+**Response (200):**
+```
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="{job_id}.sac"
+Cache-Control: public, max-age=31536000, immutable
+[Binary SAC data]
+```
+
+**Response (404):**
+```json
+{
+  "detail": "Job not found" | "No mask files found for job"
+}
+```
+
+**Example:**
+```bash
+curl http://localhost:8765/v1/sac/encode/job/abc123 --output abc123.sac
+```
+
+---
+
+### 12. Batch SAC Encoding (Parallel)
+```http
+POST /v1/sac/encode/batch
+Content-Type: application/json
+```
+
+**Purpose:** Encode multiple jobs in parallel with CPU parallelization.
+
+**Request Body:**
+```json
+{
+  "job_ids": ["job1", "job2", "job3"],
+  "output_dir": "outputs"
+}
+```
+
+**Response (200):**
+```json
+{
+  "encoded_count": 3,
+  "failed_count": 0,
+  "total_bytes": 1572864,
+  "results": {
+    "job1": {
+      "sac_path": "/path/to/job1.sac",
+      "width": 512,
+      "height": 512,
+      "size_bytes": 524288
+    },
+    "job2": { ... },
+    "job3": { ... }
+  }
+}
+```
+
+**Performance:**
+- 1 job: ~5ms
+- 10 jobs: ~50ms (parallelized)
+- 100 jobs: ~500ms (parallelized)
+
+**Example:**
+```bash
+curl -X POST http://localhost:8765/v1/sac/encode/batch \
+  -H "Content-Type: application/json" \
+  -d '{"job_ids": ["job1", "job2", "job3"]}'
+```
+
+---
+
+### SAC Format Specification
+
+**Binary Layout (24-byte header + payload):**
+```
+Offset  Size  Field           Type      Value
+------  ----  --------------  --------  -----------
+0       4     magic           char[4]   "SAC1"
+4       1     flags           uint8     0
+5       1     dtype_code      uint8     1 (int16)
+6       1     arrays_count    uint8     2
+7       1     reserved        uint8     0
+8       4     length_a        uint32    N elements
+12      4     length_b        uint32    N elements
+16      4     width           uint32    Image width
+20      4     height          uint32    Image height
+24      2*N   payload_a       int16[]   Array A data
+24+2N   2*N   payload_b       int16[]   Array B data
+```
+
+**Key Properties:**
+- **Endianness:** Little-endian throughout
+- **Size:** ~2MB uncompressed (512×512), ~200KB-1MB with CDN Brotli
+- **MIME type:** `application/octet-stream`
+- **Caching:** `public, max-age=31536000, immutable`
+
+**Browser Parsing Example:**
+```javascript
+async function parseSAC(buffer) {
+  const dv = new DataView(buffer);
+  const magic = String.fromCharCode(
+    dv.getUint8(0), dv.getUint8(1),
+    dv.getUint8(2), dv.getUint8(3)
+  );
+  if (magic !== 'SAC1') throw new Error('Invalid SAC');
+
+  const lengthA = dv.getUint32(8, true);
+  const lengthB = dv.getUint32(12, true);
+  const width = dv.getUint32(16, true);
+  const height = dv.getUint32(20, true);
+
+  const a = new Int16Array(buffer, 24, lengthA);
+  const b = new Int16Array(buffer, 24 + lengthA * 2, lengthB);
+
+  return { a, b, width, height };
+}
+```
+
+**Documentation:**
+- Full specification: `sac_v_1_cdn_mask_transfer_protocol.md`
+- Integration guide: `artorize_gateway/INTEGRATION_GUIDE.md`
+- API reference: `artorize_gateway/SAC_API_GUIDE.md`
+
+---
+
 ## Configuration Files
 
 Protection layers can be configured via JSON/TOML files or environment variables:
@@ -630,5 +847,12 @@ Error responses include a `detail` field with the error message:
 ## FastAPI Documentation
 
 When running the server, interactive API documentation is available at:
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
+- Swagger UI: `http://localhost:8765/docs`
+- ReDoc: `http://localhost:8765/redoc`
+
+## Additional Resources
+
+- **Integration Guide:** `artorize_gateway/INTEGRATION_GUIDE.md` - Complete workflow for receiving SAC-encoded masks
+- **SAC API Guide:** `artorize_gateway/SAC_API_GUIDE.md` - Detailed SAC endpoint documentation
+- **SAC Protocol Spec:** `sac_v_1_cdn_mask_transfer_protocol.md` - Binary format specification
+- **Gateway README:** `artorize_gateway/README.md` - Gateway overview and setup

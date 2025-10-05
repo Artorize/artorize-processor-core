@@ -25,6 +25,7 @@ from artorize_runner.protection_pipeline import (
 from artorize_runner.utils import extend_sys_path
 from .input_utils import download_to_path, resolve_local_path, parse_comma_separated, boolean_from_form
 from .similarity_routes import router as similarity_router
+from .sac_routes import router as sac_router
 from .callback_client import CallbackClient
 from .image_storage import StorageUploader
 
@@ -264,19 +265,27 @@ async def _send_callback_on_completion(
         try:
             # Find the final protected image (last layer)
             final_layer_path = None
+            sac_mask_path = None
+
             if result.summary.get("layers"):
                 layers = result.summary["layers"]
                 if layers:
-                    final_layer_path = Path(layers[-1].get("path", ""))
+                    final_layer = layers[-1]
+                    final_layer_path = Path(final_layer.get("path", ""))
+
+                    # Look for SAC mask in the final layer's poison mask data
+                    if "poison_mask_sac_path" in final_layer:
+                        sac_mask_path = Path(final_layer["poison_mask_sac_path"])
 
             if not final_layer_path or not final_layer_path.exists():
                 raise RuntimeError("Final protected image not found")
 
-            # Upload to storage
+            # Upload to storage (includes SAC if available)
             storage_urls = await state.storage_uploader.upload_protected_image(
                 final_layer_path,
                 job.job_id,
                 image_format="jpeg",
+                sac_path=sac_mask_path,
             )
 
             # Extract hashes from analysis
@@ -288,23 +297,29 @@ async def _send_callback_on_completion(
                         break
 
             # Build success payload
+            payload_result = {
+                "protected_image_url": storage_urls["protected_image_url"],
+                "thumbnail_url": storage_urls["thumbnail_url"],
+                "hashes": hashes,
+                "metadata": {
+                    "artist_name": job.artist_name,
+                    "artwork_title": job.artwork_title,
+                },
+                "watermark": {
+                    "strategy": job.watermark_strategy or "invisible-watermark",
+                    "strength": job.watermark_strength or 0.5,
+                },
+            }
+
+            # Add SAC mask URL if available
+            if "sac_mask_url" in storage_urls:
+                payload_result["sac_mask_url"] = storage_urls["sac_mask_url"]
+
             payload = {
                 "job_id": job.job_id,
                 "status": "completed",
                 "processing_time_ms": processing_time_ms,
-                "result": {
-                    "protected_image_url": storage_urls["protected_image_url"],
-                    "thumbnail_url": storage_urls["thumbnail_url"],
-                    "hashes": hashes,
-                    "metadata": {
-                        "artist_name": job.artist_name,
-                        "artwork_title": job.artwork_title,
-                    },
-                    "watermark": {
-                        "strategy": job.watermark_strategy or "invisible-watermark",
-                        "strength": job.watermark_strength or 0.5,
-                    },
-                },
+                "result": payload_result,
             }
         except Exception as e:
             # Storage upload failed, send error
@@ -492,6 +507,9 @@ def create_app(config: Optional[GatewayConfig] = None) -> FastAPI:
 
     # Include similarity search routes
     app.include_router(similarity_router)
+
+    # Include SAC encoding routes
+    app.include_router(sac_router)
 
     def get_state() -> GatewayState:
         return state

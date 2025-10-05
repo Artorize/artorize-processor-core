@@ -41,6 +41,8 @@ app = create_app(config)
 
 ## API Endpoints
 
+### Job Processing
+
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/v1/jobs` | Submit image (multipart or JSON) |
@@ -49,31 +51,78 @@ app = create_app(config)
 | `GET` | `/v1/jobs/{job_id}/layers/{stage}` | Download layer image |
 | `DELETE` | `/v1/jobs/{job_id}` | Clean up job files |
 
+### SAC Encoding (Mask Transmission)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/sac/encode` | Encode hi/lo mask images to SAC binary |
+| `POST` | `/v1/sac/encode/npz` | Encode from NPZ arrays to SAC binary |
+| `GET` | `/v1/sac/encode/job/{job_id}` | Generate SAC from job masks |
+| `POST` | `/v1/sac/encode/batch` | Parallel batch SAC encoding |
+
+**SAC Encoding Features:**
+- **Fast**: 2-10ms per mask pair, CPU-parallelized batches
+- **Compact**: 30-1000% smaller than JSON/Base64
+- **CDN-optimized**: Immutable caching headers, Brotli-friendly
+- **Full precision**: Lossless int16 encoding
+
+See `SAC_API_GUIDE.md` for detailed usage and `sac_v_1_cdn_mask_transfer_protocol.md` for format specification.
+
 ### Example Usage
 
+**Process Artwork with Callback (Recommended):**
+```bash
+curl -X POST http://localhost:8765/v1/process/artwork \
+  -F "file=@artwork.jpg" \
+  -F 'metadata={
+    "job_id": "unique-123",
+    "callback_url": "https://your-site.com/api/callbacks",
+    "callback_auth_token": "secret",
+    "artist_name": "Artist Name",
+    "artwork_title": "Artwork Title"
+  }'
+```
+
+**Legacy Job Submission:**
 ```bash
 # Submit image file
-curl -F "file=@image.jpg" -F "include_protection=true" http://localhost:8000/v1/jobs
+curl -F "file=@image.jpg" -F "include_protection=true" http://localhost:8765/v1/jobs
 
 # Submit by URL
-curl -X POST http://localhost:8000/v1/jobs \
+curl -X POST http://localhost:8765/v1/jobs \
   -H "Content-Type: application/json" \
   -d '{"image_url": "https://example.com/image.jpg"}'
 
 # Check status
-curl http://localhost:8000/v1/jobs/{job_id}
+curl http://localhost:8765/v1/jobs/{job_id}
 
 # Download protected image
-curl http://localhost:8000/v1/jobs/{job_id}/layers/nightshade -o protected.jpg
+curl http://localhost:8765/v1/jobs/{job_id}/layers/nightshade -o protected.jpg
+```
+
+**SAC Mask Encoding:**
+```bash
+# Encode from job
+curl http://localhost:8765/v1/sac/encode/job/{job_id} --output mask.sac
+
+# Batch encode multiple jobs
+curl -X POST http://localhost:8765/v1/sac/encode/batch \
+  -H "Content-Type: application/json" \
+  -d '{"job_ids": ["job1", "job2"]}'
 ```
 
 ## API Documentation
 
-When running, interactive documentation is available at:
-- **Swagger UI**: `http://localhost:8000/docs`
-- **ReDoc**: `http://localhost:8000/redoc`
+**Integration Guides:**
+- **INTEGRATION_GUIDE.md** - Complete workflow for receiving SAC-encoded masks
+- **SAC_API_GUIDE.md** - SAC encoding endpoint reference
+- **sac_v_1_cdn_mask_transfer_protocol.md** - Binary format specification
 
-For complete API reference, see `../documentation-processor.md`.
+**Interactive API Docs:**
+- **Swagger UI**: `http://localhost:8765/docs`
+- **ReDoc**: `http://localhost:8765/redoc`
+
+For complete processor reference, see `../documentation-processor.md`.
 
 ## Output Structure
 
@@ -88,8 +137,19 @@ outputs/<job-id>/
 │   ├── 03-mist/
 │   ├── 04-nightshade/
 │   └── 05-invisible-watermark/
+├── poison_mask/          # Poison mask files (NEW)
+│   ├── *_mask_hi.png     # High-byte mask planes
+│   ├── *_mask_lo.png     # Low-byte mask planes
+│   ├── *_mask_planes.npz # Compressed NumPy arrays
+│   ├── *_mask.sac        # SAC-encoded binary (CDN-ready)
+│   └── *_poison_metadata.json
 └── c2pa/                 # C2PA manifest files
 ```
+
+**Key Files:**
+- `*_mask.sac` - **SAC-encoded mask for CDN delivery** (auto-generated)
+- `*_mask_hi.png`, `*_mask_lo.png` - Dual-plane poison masks
+- `*_mask_planes.npz` - Efficient compressed storage
 
 ## Testing
 

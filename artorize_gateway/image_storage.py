@@ -68,28 +68,31 @@ class StorageUploader:
         image_path: Path,
         job_id: str,
         image_format: str = "jpeg",
+        sac_path: Optional[Path] = None,
     ) -> Dict[str, str]:
         """
-        Upload protected image and thumbnail to storage.
+        Upload protected image, thumbnail, and optional SAC mask to storage.
 
         Args:
             image_path: Path to the image file to upload
             job_id: Unique job identifier
             image_format: Image format (jpeg, png, etc.)
+            sac_path: Optional path to SAC-encoded mask file
 
         Returns:
-            Dictionary with 'protected_image_url' and 'thumbnail_url'
+            Dictionary with 'protected_image_url', 'thumbnail_url', and optionally 'sac_mask_url'
         """
         if self.storage_type == "s3":
-            return await self._upload_to_s3(image_path, job_id, image_format)
+            return await self._upload_to_s3(image_path, job_id, image_format, sac_path)
         else:
-            return await self._upload_to_local(image_path, job_id, image_format)
+            return await self._upload_to_local(image_path, job_id, image_format, sac_path)
 
     async def _upload_to_s3(
         self,
         image_path: Path,
         job_id: str,
         image_format: str,
+        sac_path: Optional[Path] = None,
     ) -> Dict[str, str]:
         """Upload to S3 storage."""
         if not self.s3_client or not self.s3_bucket_name:
@@ -98,6 +101,7 @@ class StorageUploader:
         # Generate S3 keys
         full_key = f"protected/{job_id}.{image_format}"
         thumb_key = f"thumbnails/{job_id}_thumb.{image_format}"
+        sac_key = f"protected/{job_id}.{image_format}.sac"
 
         # Upload full image
         with open(image_path, "rb") as f:
@@ -108,7 +112,7 @@ class StorageUploader:
             Key=full_key,
             Body=image_data,
             ContentType=f"image/{image_format}",
-            CacheControl="public, max-age=31536000",
+            CacheControl="public, max-age=31536000, immutable",
         )
         logger.info(f"Uploaded full image to S3: {full_key}")
 
@@ -125,16 +129,34 @@ class StorageUploader:
 
         # Build URLs
         base_url = self.cdn_base_url or f"https://{self.s3_bucket_name}.s3.{self.s3_region}.amazonaws.com"
-        return {
+        result = {
             "protected_image_url": f"{base_url}/{full_key}",
             "thumbnail_url": f"{base_url}/{thumb_key}",
         }
+
+        # Upload SAC mask if provided
+        if sac_path and sac_path.exists():
+            with open(sac_path, "rb") as f:
+                sac_data = f.read()
+
+            self.s3_client.put_object(
+                Bucket=self.s3_bucket_name,
+                Key=sac_key,
+                Body=sac_data,
+                ContentType="application/octet-stream",
+                CacheControl="public, max-age=31536000, immutable",
+            )
+            logger.info(f"Uploaded SAC mask to S3: {sac_key}")
+            result["sac_mask_url"] = f"{base_url}/{sac_key}"
+
+        return result
 
     async def _upload_to_local(
         self,
         image_path: Path,
         job_id: str,
         image_format: str,
+        sac_path: Optional[Path] = None,
     ) -> Dict[str, str]:
         """Store locally and return local URLs."""
         if not self.output_dir:
@@ -149,8 +171,10 @@ class StorageUploader:
         # Copy full image
         full_filename = f"{job_id}.{image_format}"
         thumb_filename = f"{job_id}_thumb.{image_format}"
+        sac_filename = f"{job_id}.{image_format}.sac"
         full_path = protected_dir / full_filename
         thumb_path = thumbnails_dir / thumb_filename
+        sac_dest_path = protected_dir / sac_filename
 
         # Copy or move the original
         import shutil
@@ -165,10 +189,18 @@ class StorageUploader:
         logger.info(f"Stored thumbnail locally: {thumb_path}")
 
         # Build URLs
-        return {
+        result = {
             "protected_image_url": f"{self.local_storage_base_url}/protected/{full_filename}",
             "thumbnail_url": f"{self.local_storage_base_url}/thumbnails/{thumb_filename}",
         }
+
+        # Copy SAC mask if provided
+        if sac_path and sac_path.exists():
+            shutil.copy2(sac_path, sac_dest_path)
+            logger.info(f"Stored SAC mask locally: {sac_dest_path}")
+            result["sac_mask_url"] = f"{self.local_storage_base_url}/protected/{sac_filename}"
+
+        return result
 
     async def _generate_thumbnail(
         self,
