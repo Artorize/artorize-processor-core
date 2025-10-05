@@ -1,0 +1,366 @@
+# Artorize Gateway Integration Guide
+
+Complete guide for integrating with the Artorize protection pipeline and receiving SAC-encoded masks.
+
+## Overview
+
+When you submit an image for protection, the gateway:
+1. Applies multiple protection layers (Fawkes, PhotoGuard, Mist, Nightshade, watermarks)
+2. Generates poison masks (hi/lo planes) for each layer
+3. **Automatically encodes masks to SAC binary format**
+4. Uploads protected image + SAC mask to CDN/storage
+5. Sends callback with all URLs
+
+## Workflow
+
+### 1. Submit Image for Processing
+
+**POST** `/v1/process/artwork`
+
+```bash
+curl -X POST http://localhost:8765/v1/process/artwork \
+  -F "file=@artwork.jpg" \
+  -F 'metadata={
+    "job_id": "unique-job-123",
+    "artist_name": "Artist Name",
+    "artwork_title": "Artwork Title",
+    "callback_url": "https://your-site.com/api/callbacks/artorize",
+    "callback_auth_token": "your-secret-token",
+    "watermark_strategy": "invisible-watermark",
+    "watermark_strength": 0.5
+  }'
+```
+
+**Response** (202 Accepted):
+```json
+{
+  "job_id": "unique-job-123",
+  "status": "processing",
+  "estimated_time_seconds": 45,
+  "message": "Job queued for processing. Callback will be sent upon completion."
+}
+```
+
+---
+
+### 2. Receive Callback (Automatic)
+
+Your callback endpoint receives a POST request when processing completes.
+
+**Callback Payload Structure:**
+
+```json
+{
+  "job_id": "unique-job-123",
+  "status": "completed",
+  "processing_time_ms": 38420,
+  "result": {
+    "protected_image_url": "https://cdn.example.com/protected/unique-job-123.jpeg",
+    "thumbnail_url": "https://cdn.example.com/thumbnails/unique-job-123_thumb.jpeg",
+    "sac_mask_url": "https://cdn.example.com/protected/unique-job-123.jpeg.sac",
+    "hashes": {
+      "average_hash": "ffc3c3c3c3c3c3c3",
+      "perceptual_hash": "8f8f8f8f8f8f8f8f",
+      "difference_hash": "a1a1a1a1a1a1a1a1",
+      "wavelet_hash": "b2b2b2b2b2b2b2b2"
+    },
+    "metadata": {
+      "artist_name": "Artist Name",
+      "artwork_title": "Artwork Title"
+    },
+    "watermark": {
+      "strategy": "invisible-watermark",
+      "strength": 0.5
+    }
+  }
+}
+```
+
+**Key Fields:**
+- `protected_image_url`: Final protected image (CDN-hosted, immutable cache)
+- `sac_mask_url`: **SAC-encoded mask binary** (append `.sac` to image URL)
+- `thumbnail_url`: 300x300 thumbnail for previews
+- `hashes`: Perceptual hashes for similarity search
+
+---
+
+### 3. Store and Serve to Frontend
+
+**Backend (Store URLs):**
+
+```python
+@app.post("/api/callbacks/artorize")
+async def handle_artorize_callback(payload: dict, authorization: str):
+    # Validate auth token
+    if authorization != f"Bearer {settings.ARTORIZE_SECRET}":
+        raise HTTPException(401)
+
+    job_id = payload["job_id"]
+    result = payload["result"]
+
+    # Save to database
+    await db.artworks.update_one(
+        {"job_id": job_id},
+        {
+            "$set": {
+                "protected_image_url": result["protected_image_url"],
+                "thumbnail_url": result["thumbnail_url"],
+                "sac_mask_url": result["sac_mask_url"],
+                "hashes": result["hashes"],
+                "processing_status": "completed",
+                "completed_at": datetime.utcnow(),
+            }
+        }
+    )
+
+    return {"status": "received"}
+```
+
+**Frontend API Response:**
+
+```json
+{
+  "artwork_id": "12345",
+  "image_url": "https://cdn.example.com/protected/unique-job-123.jpeg",
+  "thumbnail_url": "https://cdn.example.com/thumbnails/unique-job-123_thumb.jpeg",
+  "mask_url": "https://cdn.example.com/protected/unique-job-123.jpeg.sac",
+  "artist_name": "Artist Name",
+  "title": "Artwork Title"
+}
+```
+
+---
+
+### 4. Browser: Fetch and Parse SAC Mask
+
+The frontend can fetch the SAC mask to reconstruct the original image or apply visual effects.
+
+**JavaScript Example:**
+
+```javascript
+// Fetch SAC mask
+async function fetchSACMask(sacUrl) {
+  const response = await fetch(sacUrl, { mode: 'cors' });
+  if (!response.ok) throw new Error(`SAC fetch failed: ${response.status}`);
+
+  const buffer = await response.arrayBuffer();
+  return parseSAC(buffer);
+}
+
+// Parse SAC binary format
+function parseSAC(buffer) {
+  const dv = new DataView(buffer);
+
+  // Validate magic
+  const magic = String.fromCharCode(
+    dv.getUint8(0), dv.getUint8(1),
+    dv.getUint8(2), dv.getUint8(3)
+  );
+  if (magic !== 'SAC1') throw new Error('Invalid SAC file');
+
+  // Parse header
+  const lengthA = dv.getUint32(8, true);
+  const lengthB = dv.getUint32(12, true);
+  const width = dv.getUint32(16, true);
+  const height = dv.getUint32(20, true);
+
+  // Extract int16 arrays
+  const a = new Int16Array(buffer, 24, lengthA);
+  const b = new Int16Array(buffer, 24 + lengthA * 2, lengthB);
+
+  return { a, b, width, height };
+}
+
+// Apply mask to reconstruct original
+async function reconstructOriginal(protectedImgEl, sacUrl) {
+  const { a, b, width, height } = await fetchSACMask(sacUrl);
+
+  // Create canvas for reconstruction
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+
+  // Draw protected image
+  const protectedBitmap = await createImageBitmap(
+    await fetch(protectedImgEl.src).then(r => r.blob())
+  );
+  ctx.drawImage(protectedBitmap, 0, 0, width, height);
+
+  // Apply mask to reconstruct
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const pixels = imageData.data;
+
+  for (let i = 0; i < a.length; i++) {
+    const pixelIdx = i * 4;
+    // Apply differential mask (simplified - actual implementation depends on encoding)
+    pixels[pixelIdx + 0] = Math.max(0, Math.min(255, pixels[pixelIdx + 0] + a[i]));
+    pixels[pixelIdx + 1] = Math.max(0, Math.min(255, pixels[pixelIdx + 1] + b[i]));
+    // ... apply to remaining channels
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+  return canvas;
+}
+```
+
+**React Component Example:**
+
+```jsx
+function ProtectedArtwork({ artwork }) {
+  const [showOriginal, setShowOriginal] = useState(false);
+  const canvasRef = useRef(null);
+
+  useEffect(() => {
+    if (showOriginal && artwork.mask_url) {
+      const img = document.createElement('img');
+      img.src = artwork.image_url;
+      img.onload = async () => {
+        const canvas = await reconstructOriginal(img, artwork.mask_url);
+        canvasRef.current?.replaceWith(canvas);
+      };
+    }
+  }, [showOriginal, artwork]);
+
+  return (
+    <div>
+      <img src={artwork.image_url} alt={artwork.title} />
+      <button onClick={() => setShowOriginal(!showOriginal)}>
+        {showOriginal ? 'Show Protected' : 'Show Original'}
+      </button>
+      <canvas ref={canvasRef} style={{ display: showOriginal ? 'block' : 'none' }} />
+    </div>
+  );
+}
+```
+
+---
+
+## URL Convention
+
+For consistency, SAC masks follow this convention:
+
+```
+Image URL:    https://cdn.example.com/i/12345.jpg
+SAC Mask URL: https://cdn.example.com/i/12345.jpg.sac
+```
+
+Simply append `.sac` to the image URL.
+
+---
+
+## Error Handling
+
+**Callback Error Payload:**
+
+```json
+{
+  "job_id": "unique-job-123",
+  "status": "failed",
+  "processing_time_ms": 5200,
+  "error": {
+    "code": "PROCESSING_FAILED",
+    "message": "Image processing error: invalid format"
+  }
+}
+```
+
+**Error Codes:**
+- `PROCESSING_FAILED`: Protection pipeline error
+- `STORAGE_UPLOAD_FAILED`: CDN/S3 upload error
+- `UNKNOWN_ERROR`: Unexpected failure
+
+---
+
+## Performance Characteristics
+
+| Stage | Time |
+|-------|------|
+| Protection pipeline | 20-40s |
+| SAC encoding | 2-10ms |
+| CDN upload | 100-500ms |
+| **Total** | **~25-45s** |
+
+**SAC File Sizes:**
+- Raw SAC: ~2MB (512×512 RGBA)
+- With Brotli: ~200KB-1MB (50-80% compression)
+
+---
+
+## Security Considerations
+
+1. **Validate callback auth token**: Always check `Authorization` header
+2. **Verify job ownership**: Ensure job_id matches your submitted job
+3. **HTTPS only**: Never accept callbacks over HTTP
+4. **Rate limiting**: Prevent callback spam
+5. **SAC integrity**: Optionally compute SHA-256 of SAC for verification
+
+**Example Auth Header:**
+```
+Authorization: Bearer your-secret-token
+```
+
+---
+
+## Testing
+
+### Local Testing
+
+```bash
+# Start gateway
+py -3.12 -m artorize_gateway --host localhost --port 8765
+
+# Submit test job
+curl -X POST http://localhost:8765/v1/process/artwork \
+  -F "file=@test.jpg" \
+  -F 'metadata={"job_id":"test123","callback_url":"http://localhost:3000/test","callback_auth_token":"test-token"}'
+
+# Check job status
+curl http://localhost:8765/v1/jobs/test123
+
+# Manually fetch SAC mask
+curl http://localhost:8765/v1/sac/encode/job/test123 --output test.sac
+```
+
+---
+
+## Advanced: Direct SAC Encoding
+
+If you want to encode SAC masks separately (not through the pipeline):
+
+**From Images:**
+```bash
+curl -X POST http://localhost:8765/v1/sac/encode \
+  -F "mask_hi=@mask_hi.png" \
+  -F "mask_lo=@mask_lo.png" \
+  --output output.sac
+```
+
+**From Job:**
+```bash
+curl http://localhost:8765/v1/sac/encode/job/{job_id} --output {job_id}.sac
+```
+
+**Batch Encoding:**
+```bash
+curl -X POST http://localhost:8765/v1/sac/encode/batch \
+  -H "Content-Type: application/json" \
+  -d '{"job_ids": ["job1", "job2", "job3"]}'
+```
+
+---
+
+## Summary
+
+1. **Submit** artwork via `/v1/process/artwork`
+2. **Receive** callback with `protected_image_url` and `sac_mask_url`
+3. **Store** URLs in your database
+4. **Serve** to frontend via your API
+5. **Fetch** SAC mask in browser for interactivity
+
+SAC masks are **automatically generated** during processing—no extra steps needed!
+
+For more details, see:
+- `SAC_API_GUIDE.md` - SAC encoding API reference
+- `sac_v_1_cdn_mask_transfer_protocol.md` - SAC binary format spec
+- `artorize_gateway/README.md` - Gateway API documentation

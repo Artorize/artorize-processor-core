@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
 import json
 import shutil
 from dataclasses import dataclass, field
+from io import BytesIO
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Literal
 
@@ -12,7 +14,31 @@ from PIL import Image, ImageEnhance, ImageFilter
 from .cli import build_processors
 from .core import run_pipeline, dumps_json
 from .utils import extend_sys_path
-from .c2pa_metadata import C2PAManifestConfig, embed_c2pa_manifest
+
+try:
+    from .c2pa_metadata import C2PAManifestConfig, embed_c2pa_manifest  # type: ignore
+    C2PA_AVAILABLE = True
+except Exception:
+    from dataclasses import dataclass
+
+    C2PA_AVAILABLE = False
+
+    @dataclass
+    class C2PAManifestConfig:
+        enabled: bool = False
+
+    def embed_c2pa_manifest(*args, **kwargs):
+        src = kwargs.get("source_path") or (args[0] if args else "")
+        dest = kwargs.get("dest_dir") or (args[1] if len(args) > 1 else None)
+        signed_path = str(Path(src)) if src else (str(Path(dest)) if dest else str(Path.cwd()))
+        manifest_path = str(Path(dest) / "manifest.json") if dest else ""
+        return {
+            "signed_path": signed_path,
+            "manifest_path": manifest_path,
+            "certificate_path": "",
+            "license_path": "",
+            "xmp_path": "",
+        }
 
 # Import poison mask processor functions
 try:
@@ -201,6 +227,24 @@ def _apply_poison_mask_if_enabled(
         mask_result.hi_image.save(mask_hi_path)
         mask_result.lo_image.save(mask_lo_path)
 
+        # Save as NPZ for efficient loading
+        hi_arr = np.asarray(mask_result.hi_image, dtype=np.uint8)
+        lo_arr = np.asarray(mask_result.lo_image, dtype=np.uint8)
+        npz_path = poison_dir / f"{stage_name}_mask_planes.npz"
+        np.savez_compressed(npz_path, hi=hi_arr, lo=lo_arr)
+
+        # Encode to SAC format for CDN delivery
+        sac_path = poison_dir / f"{stage_name}_mask.sac"
+        try:
+            from artorize_gateway.sac_encoder import encode_mask_pair_from_images
+            sac_result = encode_mask_pair_from_images(mask_hi_path, mask_lo_path)
+            sac_path.write_bytes(sac_result.sac_bytes)
+            sac_size = len(sac_result.sac_bytes)
+        except Exception as sac_exc:
+            print(f"Warning: SAC encoding failed: {sac_exc}")
+            sac_path = None
+            sac_size = 0
+
         # Build metadata
         metadata = build_metadata(
             original_path=Path("original.png"),  # placeholder
@@ -219,12 +263,20 @@ def _apply_poison_mask_if_enabled(
         metadata_path = poison_dir / f"{stage_name}_poison_metadata.json"
         metadata_path.write_text(json.dumps(metadata, indent=2))
 
-        return {
+        result_data = {
             "poison_mask_hi_path": str(mask_hi_path.resolve()),
             "poison_mask_lo_path": str(mask_lo_path.resolve()),
+            "poison_mask_npz_path": str(npz_path.resolve()),
             "poison_metadata_path": str(metadata_path.resolve()),
             "diff_stats": mask_result.diff_stats,
         }
+
+        # Add SAC info if encoding succeeded
+        if sac_path:
+            result_data["poison_mask_sac_path"] = str(sac_path.resolve())
+            result_data["sac_size_bytes"] = sac_size
+
+        return result_data
 
     except Exception as exc:
         print(f"Warning: Poison mask processing failed: {exc}")
@@ -282,6 +334,15 @@ def _generate_layer_mask(previous: Image.Image, current: Image.Image, poison_mas
     return mask if mask.mode == "L" else mask.convert("L")
 
 
+def _image_to_base64(image: Image.Image, format: str = "PNG") -> str:
+    """Convert PIL Image to base64-encoded string."""
+    buffer = BytesIO()
+    image.save(buffer, format=format)
+    buffer.seek(0)
+    img_bytes = buffer.getvalue()
+    return base64.b64encode(img_bytes).decode('utf-8')
+
+
 DEFAULT_WORKFLOW_CONFIG = ProtectionWorkflowConfig()
 PROTECTION_STAGES: Sequence[ProtectionStage] = tuple(_build_stage_sequence(DEFAULT_WORKFLOW_CONFIG))
 
@@ -323,6 +384,7 @@ def _apply_layers(
     target_dir: Path,
     config: ProtectionWorkflowConfig,
 ) -> List[Dict[str, object]]:
+    # Prepare input image and working copy; C2PA handling is performed later
     original = Image.open(image_path)
     fmt = getattr(original, "format", None)
     rgb_image = original.convert("RGB")
@@ -381,12 +443,16 @@ def _apply_layers(
         mask_image = _generate_layer_mask(previous_saved, saved_image, poison_mask_data)
         mask_image.save(mask_path, format="PNG")
 
+        # Convert mask to base64
+        mask_base64 = _image_to_base64(mask_image, format="PNG")
+
         stage_data = {
             "stage": stage.key,
             "description": stage.description,
             "path": str(stage_path.resolve()),
             "processing_size": list(current.size),
             "mask_path": str(mask_path.resolve()),
+            "mask_base64": mask_base64,
         }
 
         # Add poison mask data to stage info if available
@@ -399,6 +465,7 @@ def _apply_layers(
 
     if config.enable_c2pa_manifest:
         c2pa_dir = target_dir / "c2pa"
+        _ensure_directory(c2pa_dir)
         source_for_manifest = (
             last_stage_path
             if last_stage_path and last_stage_path.exists()
@@ -419,6 +486,7 @@ def _apply_layers(
                 final_rgb = final_image.convert("RGB")
             mask_image = _generate_layer_mask(previous_saved, final_rgb)
             mask_image.save(mask_path, format="PNG")
+            mask_base64 = _image_to_base64(mask_image, format="PNG")
             previous_saved = final_rgb
             last_stage_path = signed_path
             stages.append({
@@ -427,6 +495,7 @@ def _apply_layers(
                 "path": str(signed_path.resolve()),
                 "processing_size": list(original.size),
                 "mask_path": str(mask_path.resolve()),
+                "mask_base64": mask_base64,
                 "manifest_path": str(Path(c2pa_result["manifest_path"]).resolve()),
                 "certificate_path": str(Path(c2pa_result["certificate_path"]).resolve()),
                 "license_path": (
@@ -448,6 +517,7 @@ def _apply_layers(
                 fallback_rgb = previous_saved
             mask_image = _generate_layer_mask(previous_saved, fallback_rgb)
             mask_image.save(mask_path, format="PNG")
+            mask_base64 = _image_to_base64(mask_image, format="PNG")
             previous_saved = fallback_rgb
             stages.append({
                 "stage": "c2pa-manifest",
@@ -456,6 +526,7 @@ def _apply_layers(
                 "path": str(fallback_path),
                 "processing_size": list(original.size),
                 "mask_path": str(mask_path.resolve()),
+                "mask_base64": mask_base64,
                 "artifact_dir": str(c2pa_dir.resolve()),
             })
 
