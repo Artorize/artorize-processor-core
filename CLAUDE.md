@@ -7,11 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **IMPORTANT**: This project requires Python 3.12.x (specifically 3.12.10 or compatible).
 The `blockhash` library is not compatible with Python 3.13+.
 
-**Platform-specific Python commands:**
-- **Windows**: Use `py -3.12` (not `py -3` or `python3`)
-- **macOS/Linux**: Use `python3.12` (not `python3` if default is 3.13+)
-
-All examples below use `py -3.12` for Windows. On macOS/Linux, replace with `python3.12`.
+**Always use `py -3.12`** (not `py -3` or `python3`) for all Python commands to ensure compatibility.
 
 ## Core Commands
 
