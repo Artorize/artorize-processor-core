@@ -8,8 +8,25 @@ When you submit an image for protection, the gateway:
 1. Applies multiple protection layers (Fawkes, PhotoGuard, Mist, Nightshade, watermarks)
 2. Generates poison masks (hi/lo planes) for each layer
 3. **Automatically encodes masks to SAC binary format**
-4. Uploads protected image + SAC mask to CDN/storage
-5. Sends callback with all URLs
+4. **NEW**: Uploads directly to backend (backend mode) OR uploads to CDN/storage (legacy mode)
+5. Sends callback with backend artwork_id (backend mode) OR URLs (legacy mode)
+
+## Integration Modes
+
+The gateway supports **two integration modes**:
+
+### Mode 1: Backend Upload (Recommended for New Integrations)
+- Processor uploads directly to your backend storage
+- Callback returns simple `backend_artwork_id`
+- Eliminates router temporary storage
+- Stateless router operation
+- **See: [BACKEND_UPLOAD_GUIDE.md](./BACKEND_UPLOAD_GUIDE.md) for complete documentation**
+
+### Mode 2: CDN/Storage Upload (Legacy Mode)
+- Processor uploads to CDN/S3/local storage
+- Callback returns URLs for protected image and SAC mask
+- Router manages temporary storage
+- **This guide documents Mode 2 (legacy workflow)**
 
 ## Workflow
 
@@ -267,7 +284,8 @@ Simply append `.sac` to the image URL.
 
 **Error Codes:**
 - `PROCESSING_FAILED`: Protection pipeline error
-- `STORAGE_UPLOAD_FAILED`: CDN/S3 upload error
+- `STORAGE_UPLOAD_FAILED`: CDN/S3 upload error (legacy mode)
+- `BACKEND_UPLOAD_FAILED`: Backend upload error (backend mode)
 - `UNKNOWN_ERROR`: Unexpected failure
 
 ---
@@ -352,15 +370,36 @@ curl -X POST http://localhost:8765/v1/sac/encode/batch \
 
 ## Summary
 
-1. **Submit** artwork via `/v1/process/artwork`
+### Legacy Mode (This Guide)
+
+1. **Submit** artwork via `/v1/process/artwork` (without `backend_url`)
 2. **Receive** callback with `protected_image_url` and `sac_mask_url`
 3. **Store** URLs in your database
 4. **Serve** to frontend via your API
 5. **Fetch** SAC mask in browser for interactivity
 
+### Backend Upload Mode (Recommended)
+
+1. **Submit** artwork via `/v1/process/artwork` (with `backend_url`)
+2. **Receive** callback with `backend_artwork_id`
+3. **Fetch** artwork from backend using artwork_id
+4. **Serve** to frontend via your API
+5. **Fetch** SAC mask from backend for interactivity
+
 SAC masks are **automatically generated** during processing—no extra steps needed!
 
-For more details, see:
-- `SAC_API_GUIDE.md` - SAC encoding API reference
-- `sac_v_1_cdn_mask_transfer_protocol.md` - SAC binary format spec
-- `artorize_gateway/README.md` - Gateway API documentation
+## Related Documentation
+
+**Integration Modes:**
+- **[BACKEND_UPLOAD_GUIDE.md](./BACKEND_UPLOAD_GUIDE.md)** - Backend upload mode (recommended for new integrations)
+- This guide - Legacy CDN/storage mode
+
+**Technical References:**
+- **[SAC_API_GUIDE.md](./SAC_API_GUIDE.md)** - SAC encoding API reference
+- **[sac_v_1_cdn_mask_transfer_protocol.md](../sac_v_1_cdn_mask_transfer_protocol.md)** - SAC binary format spec
+- **[README.md](./README.md)** - Gateway API documentation
+
+**Migration:**
+- New integrations should use backend upload mode
+- Existing integrations can migrate gradually
+- Both modes are fully supported and backward compatible

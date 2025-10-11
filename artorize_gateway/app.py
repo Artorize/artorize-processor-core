@@ -19,15 +19,17 @@ from pydantic import BaseModel
 from artorize_runner.cli import build_processors
 from artorize_runner.core import BaseProcessor, run_pipeline, dumps_json
 from artorize_runner.protection_pipeline import (
-    _apply_layers,
+    ProtectionWorkflowConfig,
     _build_project_status,
 )
+from artorize_runner.protection_pipeline_gpu import _apply_layers_batched
 from artorize_runner.utils import extend_sys_path
 from .input_utils import download_to_path, resolve_local_path, parse_comma_separated, boolean_from_form
 from .similarity_routes import router as similarity_router
 from .sac_routes import router as sac_router
 from .callback_client import CallbackClient
 from .image_storage import StorageUploader
+from .backend_upload import BackendUploadClient, BackendAuthError
 
 
 STATUS_QUEUED = "queued"
@@ -52,6 +54,12 @@ class GatewayConfig:
     s3_region: str = "us-east-1"
     cdn_base_url: str = "https://cdn.artorizer.com"
     local_storage_base_url: str = "http://localhost:8000/v1/storage"
+    # Backend upload settings
+    backend_url: Optional[str] = None
+    backend_timeout: float = 30.0
+    backend_auth_token: Optional[str] = None
+    backend_upload_max_retries: int = 3
+    backend_upload_retry_delay: float = 2.0
 
     def resolved_base(self) -> Path:
         path = self.base_dir.resolve()
@@ -95,6 +103,12 @@ class JobRecord:
     artwork_title: Optional[str] = None
     watermark_strategy: Optional[str] = None
     watermark_strength: Optional[float] = None
+    # Backend upload support
+    backend_url: Optional[str] = None
+    backend_auth_token: Optional[str] = None
+    artwork_description: Optional[str] = None
+    artwork_tags: Optional[Sequence[str]] = None
+    artwork_creation_time: Optional[str] = None
 
     def touch(self, status: Optional[str] = None, error: Optional[str] = None) -> None:
         if status:
@@ -112,6 +126,7 @@ class GatewayState:
     workers: List[asyncio.Task]
     callback_client: Optional[CallbackClient] = None
     storage_uploader: Optional[StorageUploader] = None
+    backend_upload_client: Optional[BackendUploadClient] = None
 
 
 class JobStatusResponse(BaseModel):
@@ -154,6 +169,11 @@ class ArtworkMetadata(BaseModel):
     watermark_strategy: Optional[str] = None
     watermark_strength: Optional[float] = None
     tags: Optional[Sequence[str]] = None
+    # Backend upload support
+    backend_url: Optional[str] = None
+    backend_auth_token: Optional[str] = None
+    artwork_description: Optional[str] = None
+    artwork_creation_time: Optional[str] = None
 
 
 class ProcessArtworkResponse(BaseModel):
@@ -212,7 +232,11 @@ def _process_job(job: JobRecord) -> JobResult:
         analysis_path.write_text(dumps_json(analysis_summary), encoding="ascii")
 
     if job.include_protection:
-        stage_records: List[Dict[str, object]] = _apply_layers(image_path, target_dir)
+        # Use GPU pipeline by default for better performance
+        workflow_config = ProtectionWorkflowConfig()
+        stage_records: List[Dict[str, object]] = _apply_layers_batched(
+            image_path, target_dir, workflow_config, use_gpu=True
+        )
     else:
         stage_records = [_ensure_original_layer(image_path, target_dir)]
 
@@ -260,8 +284,109 @@ async def _send_callback_on_completion(
                 "message": error,
             },
         }
+    elif result and job.backend_url and state.backend_upload_client:
+        # NEW MODE: Upload directly to backend
+        try:
+            # Find the original and final protected images
+            original_image_path = job.input_path
+            final_layer_path = None
+            mask_hi_path = None
+            mask_lo_path = None
+
+            if result.summary.get("layers"):
+                layers = result.summary["layers"]
+                if layers:
+                    final_layer = layers[-1]
+                    final_layer_path = Path(final_layer.get("path", ""))
+
+                    # Look for SAC masks in the final layer's poison mask data
+                    if "poison_mask_sac_path" in final_layer:
+                        # Look for hi/lo masks - check for the pattern in the output dir
+                        sac_path = Path(final_layer["poison_mask_sac_path"])
+                        poison_mask_dir = sac_path.parent
+
+                        # Find mask files (hi and lo)
+                        for mask_file in poison_mask_dir.glob("*.sac"):
+                            if "hi" in mask_file.stem.lower():
+                                mask_hi_path = mask_file
+                            elif "lo" in mask_file.stem.lower():
+                                mask_lo_path = mask_file
+
+            if not final_layer_path or not final_layer_path.exists():
+                raise RuntimeError("Final protected image not found")
+
+            # Extract hashes from analysis
+            hashes = {}
+            if result.analysis:
+                for proc_result in result.analysis.get("results", []):
+                    if proc_result.get("processor") == "imagehash":
+                        hashes = proc_result.get("data", {}).get("hashes", {})
+                        break
+
+            # Prepare metadata for backend
+            upload_metadata = {
+                "artwork_title": job.artwork_title or "Untitled",
+                "artist_name": job.artist_name or "Unknown",
+                "artwork_description": job.artwork_description,
+                "tags": job.artwork_tags,
+                "artwork_creation_time": job.artwork_creation_time,
+                "hashes": hashes,
+                "watermark": {
+                    "strategy": job.watermark_strategy or "invisible-watermark",
+                    "strength": job.watermark_strength or 0.5,
+                },
+                "processing_time_ms": processing_time_ms,
+            }
+
+            # Upload to backend
+            backend_response = await state.backend_upload_client.upload_artwork(
+                backend_url=job.backend_url,
+                original_image_path=original_image_path,
+                protected_image_path=final_layer_path,
+                mask_hi_path=mask_hi_path,
+                mask_lo_path=mask_lo_path,
+                analysis=result.analysis,
+                summary=result.summary,
+                metadata=upload_metadata,
+                auth_token=job.backend_auth_token,
+            )
+
+            artwork_id = backend_response.get("id")
+            if not artwork_id:
+                raise RuntimeError("Backend did not return artwork_id")
+
+            # Send simplified success callback with artwork_id
+            payload = {
+                "job_id": job.job_id,
+                "status": "completed",
+                "backend_artwork_id": artwork_id,
+                "processing_time_ms": processing_time_ms,
+            }
+
+        except BackendAuthError as e:
+            # Backend authentication failed (401 - token invalid/expired/used)
+            payload = {
+                "job_id": job.job_id,
+                "status": "failed",
+                "processing_time_ms": processing_time_ms,
+                "error": {
+                    "code": "BACKEND_AUTH_FAILED",
+                    "message": str(e),
+                },
+            }
+        except Exception as e:
+            # Backend upload failed (other reasons)
+            payload = {
+                "job_id": job.job_id,
+                "status": "failed",
+                "processing_time_ms": processing_time_ms,
+                "error": {
+                    "code": "BACKEND_UPLOAD_FAILED",
+                    "message": str(e),
+                },
+            }
     elif result and state.storage_uploader:
-        # Upload to storage and send success callback
+        # OLD MODE: Upload to storage and send success callback with URLs
         try:
             # Find the final protected image (last layer)
             final_layer_path = None
@@ -484,6 +609,13 @@ def create_app(config: Optional[GatewayConfig] = None) -> FastAPI:
         output_dir=cfg.resolved_output_parent(),
     )
 
+    # Initialize backend upload client
+    state.backend_upload_client = BackendUploadClient(
+        timeout=cfg.backend_timeout,
+        max_retries=cfg.backend_upload_max_retries,
+        retry_delay=cfg.backend_upload_retry_delay,
+    )
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):  # noqa: ANN001
         cfg.resolved_base()
@@ -561,6 +693,13 @@ def create_app(config: Optional[GatewayConfig] = None) -> FastAPI:
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid metadata: {e}")
 
+        # Validate backend upload configuration
+        if artwork_meta.backend_url and not artwork_meta.backend_auth_token:
+            raise HTTPException(
+                status_code=400,
+                detail="backend_auth_token is required when backend_url is provided"
+            )
+
         # Create job directory
         config = state.config
         base_dir = config.resolved_base()
@@ -598,6 +737,12 @@ def create_app(config: Optional[GatewayConfig] = None) -> FastAPI:
             artwork_title=artwork_meta.artwork_title,
             watermark_strategy=artwork_meta.watermark_strategy,
             watermark_strength=artwork_meta.watermark_strength,
+            # Backend upload support
+            backend_url=artwork_meta.backend_url,
+            backend_auth_token=artwork_meta.backend_auth_token,
+            artwork_description=artwork_meta.artwork_description,
+            artwork_tags=artwork_meta.tags,
+            artwork_creation_time=artwork_meta.artwork_creation_time,
         )
 
         state.jobs[job_id] = record

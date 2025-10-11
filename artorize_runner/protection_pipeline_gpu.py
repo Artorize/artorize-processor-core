@@ -2,15 +2,25 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+import warnings
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Literal, Tuple
-import warnings
+from typing import Callable, Dict, List, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
+
+
+if __package__ in (None, ""):
+    package_root = Path(__file__).resolve().parent
+    parent_dir = package_root.parent
+    if str(parent_dir) not in sys.path:
+        sys.path.insert(0, str(parent_dir))
+    __package__ = package_root.name  # type: ignore[assignment]
+
 
 try:
     import torch
@@ -19,10 +29,14 @@ try:
     TORCH_AVAILABLE = True
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"PyTorch initialized with device: {DEVICE}")
-except ImportError:
+except ImportError as exc:
     TORCH_AVAILABLE = False
     DEVICE = None
-    warnings.warn("PyTorch not available. GPU acceleration disabled.")
+    warnings.warn(
+        f"PyTorch stack not available ({exc}). GPU acceleration disabled. "
+        "Install torch/torchvision as described in README.md to enable GPU support.",
+        stacklevel=2,
+    )
 
 from .cli import build_processors
 from .core import run_pipeline, dumps_json
@@ -32,11 +46,11 @@ from .protection_pipeline import (
     ProtectionStage,
     ProtectionWorkflowConfig,
     PROJECT_CATALOGUE,
+    POISON_MASK_AVAILABLE,
     _ensure_directory,
     _save_image,
     _build_project_status,
     _apply_poison_mask_if_enabled,
-    _generate_layer_mask
 )
 
 # Global RNG to keep transforms deterministic across runs
@@ -277,40 +291,6 @@ def _apply_stegano_embed_vectorized(image: Image.Image, message: str = "Protecte
     return Image.fromarray(framed)
 
 
-def _generate_layer_mask_gpu(previous: Image.Image, current: Image.Image) -> Image.Image:
-    """GPU-accelerated mask generation."""
-    if not TORCH_AVAILABLE:
-        return _generate_layer_mask_cpu(previous, current)
-
-    if previous.size != current.size:
-        previous = previous.resize(current.size, resample=Image.Resampling.BICUBIC)
-
-    prev_tensor = TF.to_tensor(previous.convert("RGB")).unsqueeze(0).to(DEVICE)
-    curr_tensor = TF.to_tensor(current.convert("RGB")).unsqueeze(0).to(DEVICE)
-
-    # Calculate difference
-    diff = torch.abs(curr_tensor - prev_tensor)
-    diff_max = diff.max(dim=1)[0]
-
-    # Amplify
-    amplified = torch.clamp(diff_max * 4, 0, 1)
-
-    # Convert to grayscale
-    mask_np = (amplified.squeeze().cpu().numpy() * 255).astype(np.uint8)
-    return Image.fromarray(mask_np, mode='L')
-
-
-def _generate_layer_mask_cpu(previous: Image.Image, current: Image.Image) -> Image.Image:
-    """CPU fallback for mask generation."""
-    if previous.size != current.size:
-        previous = previous.resize(current.size, resample=Image.Resampling.BICUBIC)
-    prev_arr = np.asarray(previous.convert("RGB"), dtype=np.int16)
-    curr_arr = np.asarray(current.convert("RGB"), dtype=np.int16)
-    diff = np.abs(curr_arr - prev_arr)
-    diff_max = diff.max(axis=2)
-    amplified = np.clip(diff_max * 4, 0, 255).astype(np.uint8)
-    mask = Image.fromarray(amplified)
-    return mask if mask.mode == "L" else mask.convert("L")
 
 
 def _build_stage_sequence_gpu(config: ProtectionWorkflowConfig) -> Sequence[ProtectionStage]:
@@ -415,25 +395,15 @@ def _apply_layers_batched(
             image=saved_image,
             original=previous_saved,
             config=config,
-            target_dir=target_dir,
+            layer_dir=layer_dir,
             stage_name=f"{index:02d}-{stage.key}"
         )
-
-        # Generate mask
-        mask_filename = f"{image_path.stem}_{stage.key}_mask.png"
-        mask_path = layer_dir / mask_filename
-        if poison_mask_data:
-            mask_image = _generate_layer_mask(previous_saved, saved_image, poison_mask_data)
-        else:
-            mask_image = _generate_layer_mask_gpu(previous_saved, saved_image) if use_gpu else _generate_layer_mask_cpu(previous_saved, saved_image)
-        mask_image.save(mask_path, format="PNG")
 
         stage_data = {
             "stage": stage.key,
             "description": stage.description,
             "path": str(stage_path.resolve()),
             "processing_size": list(current.size),
-            "mask_path": str(mask_path.resolve()),
             "processing_time": stage_times[stage.key],
             "gpu_accelerated": use_gpu and TORCH_AVAILABLE
         }
@@ -449,6 +419,7 @@ def _apply_layers_batched(
     # Handle C2PA manifest if enabled
     if config.enable_c2pa_manifest:
         c2pa_dir = target_dir / "c2pa"
+        _ensure_directory(c2pa_dir)
         source_for_manifest = (
             last_stage_path
             if last_stage_path and last_stage_path.exists()
@@ -462,20 +433,16 @@ def _apply_layers_batched(
                 asset_id=image_path.stem,
             )
             signed_path = Path(c2pa_result["signed_path"])
-            mask_filename = f"{image_path.stem}_c2pa-manifest_mask.png"
-            mask_path = c2pa_dir / mask_filename
             with Image.open(signed_path) as final_image:
                 final_image.load()
                 final_rgb = final_image.convert("RGB")
-            # For C2PA manifest, use the regular mask generation function to avoid complexity
-            mask_image = _generate_layer_mask(previous_saved, final_rgb)
-            mask_image.save(mask_path, format="PNG")
+            previous_saved = final_rgb
+            last_stage_path = signed_path
             stages.append({
                 "stage": "c2pa-manifest",
                 "description": "Embedded C2PA AI training manifest and IPTC signal",
                 "path": str(signed_path.resolve()),
                 "processing_size": list(original.size),
-                "mask_path": str(mask_path.resolve()),
                 "manifest_path": str(Path(c2pa_result["manifest_path"]).resolve()),
                 "certificate_path": str(Path(c2pa_result["certificate_path"]).resolve()),
                 "license_path": (
@@ -486,13 +453,43 @@ def _apply_layers_batched(
                 "xmp_path": str(Path(c2pa_result["xmp_path"]).resolve()),
             })
         except Exception as exc:
+            fallback_path = source_for_manifest.resolve(strict=False)
+            try:
+                with Image.open(fallback_path) as fallback_image:
+                    fallback_image.load()
+                    fallback_rgb = fallback_image.convert("RGB")
+            except Exception:
+                fallback_rgb = previous_saved
+            previous_saved = fallback_rgb
             stages.append({
                 "stage": "c2pa-manifest",
                 "description": "Attempted to embed C2PA manifest",
                 "error": str(exc),
-                "path": str(source_for_manifest.resolve()),
+                "path": str(fallback_path),
                 "processing_size": list(original.size),
                 "artifact_dir": str(c2pa_dir.resolve()),
+            })
+
+    # Generate final comparison mask between final output and original input
+    if config.enable_poison_mask and POISON_MASK_AVAILABLE and previous_saved is not None:
+        final_dir = layers_dir / f"{len(stage_sequence)+1:02d}-final-comparison"
+        _ensure_directory(final_dir)
+
+        final_poison_mask_data = _apply_poison_mask_if_enabled(
+            image=previous_saved,
+            original=rgb_image,
+            config=config,
+            layer_dir=final_dir,
+            stage_name=f"{len(stage_sequence)+1:02d}-final-comparison"
+        )
+
+        if final_poison_mask_data:
+            stages.append({
+                "stage": "final-comparison",
+                "description": "Complete protection mask (final vs original)",
+                "path": None,
+                "processing_size": list(original.size),
+                **final_poison_mask_data
             })
 
     return stages

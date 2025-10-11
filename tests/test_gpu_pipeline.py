@@ -17,7 +17,6 @@ from artorize_runner.protection_pipeline_gpu import (
     _apply_nightshade_like_gpu,
     _apply_invisible_watermark_vectorized,
     _apply_tree_ring_gpu,
-    _generate_layer_mask_gpu,
     TORCH_AVAILABLE,
     DEVICE
 )
@@ -165,19 +164,6 @@ def test_watermark_operations():
     assert tree_ring.size == test_img.size
 
 
-def test_mask_generation():
-    """Test GPU-accelerated mask generation."""
-    img1 = Image.new('RGB', (128, 128), color=(100, 100, 100))
-    img2 = Image.new('RGB', (128, 128), color=(120, 120, 120))
-
-    mask = _generate_layer_mask_gpu(img1, img2)
-    assert isinstance(mask, Image.Image)
-    assert mask.mode == 'L'
-    assert mask.size == img1.size
-
-    # Verify mask shows differences
-    mask_array = np.array(mask)
-    assert mask_array.max() > 0  # Should have some non-zero values
 
 
 def test_cpu_fallback(test_image, tmp_path):
