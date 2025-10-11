@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import base64
 import json
 import shutil
 from dataclasses import dataclass, field
-from io import BytesIO
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Literal
 
@@ -206,7 +204,7 @@ def _apply_poison_mask_if_enabled(
     image: Image.Image,
     original: Image.Image,
     config: ProtectionWorkflowConfig,
-    target_dir: Path,
+    layer_dir: Path,
     stage_name: str
 ) -> Optional[Dict[str, object]]:
     """Apply poison mask processor if enabled and available."""
@@ -214,30 +212,18 @@ def _apply_poison_mask_if_enabled(
         return None
 
     try:
-        # Create poison mask directory
-        poison_dir = target_dir / "poison_mask"
-        poison_dir.mkdir(exist_ok=True)
-
         # Compute the poison mask
         mask_result = compute_mask(original, image)
 
-        # Save mask images
-        mask_hi_path = poison_dir / f"{stage_name}_mask_hi.png"
-        mask_lo_path = poison_dir / f"{stage_name}_mask_lo.png"
-        mask_result.hi_image.save(mask_hi_path)
-        mask_result.lo_image.save(mask_lo_path)
-
-        # Save as NPZ for efficient loading
+        # Convert mask images to arrays
         hi_arr = np.asarray(mask_result.hi_image, dtype=np.uint8)
         lo_arr = np.asarray(mask_result.lo_image, dtype=np.uint8)
-        npz_path = poison_dir / f"{stage_name}_mask_planes.npz"
-        np.savez_compressed(npz_path, hi=hi_arr, lo=lo_arr)
 
-        # Encode to SAC format for CDN delivery
-        sac_path = poison_dir / f"{stage_name}_mask.sac"
+        # Encode to SAC format and save in layer directory
+        sac_path = layer_dir / f"{stage_name}_mask.sac"
         try:
-            from artorize_gateway.sac_encoder import encode_mask_pair_from_images
-            sac_result = encode_mask_pair_from_images(mask_hi_path, mask_lo_path)
+            from artorize_gateway.sac_encoder import encode_mask_pair_from_arrays
+            sac_result = encode_mask_pair_from_arrays(hi_arr, lo_arr)
             sac_path.write_bytes(sac_result.sac_bytes)
             sac_size = len(sac_result.sac_bytes)
         except Exception as sac_exc:
@@ -245,29 +231,7 @@ def _apply_poison_mask_if_enabled(
             sac_path = None
             sac_size = 0
 
-        # Build metadata
-        metadata = build_metadata(
-            original_path=Path("original.png"),  # placeholder
-            processed_path=Path("processed.png"),  # placeholder
-            mask_hi_path=mask_hi_path,
-            mask_lo_path=mask_lo_path,
-            size=mask_result.size,
-            diff_stats=mask_result.diff_stats,
-            diff_min=mask_result.diff_min,
-            diff_max=mask_result.diff_max,
-            filter_id=config.poison_mask_filter_id,
-            css_class=config.poison_mask_css_class,
-        )
-
-        # Save metadata
-        metadata_path = poison_dir / f"{stage_name}_poison_metadata.json"
-        metadata_path.write_text(json.dumps(metadata, indent=2))
-
         result_data = {
-            "poison_mask_hi_path": str(mask_hi_path.resolve()),
-            "poison_mask_lo_path": str(mask_lo_path.resolve()),
-            "poison_mask_npz_path": str(npz_path.resolve()),
-            "poison_metadata_path": str(metadata_path.resolve()),
             "diff_stats": mask_result.diff_stats,
         }
 
@@ -283,64 +247,8 @@ def _apply_poison_mask_if_enabled(
         return None
 
 
-def _generate_layer_mask_from_poison(
-    mask_hi: Image.Image,
-    mask_lo: Image.Image,
-    amplification: float = 4.0
-) -> Image.Image:
-    """Generate visualization mask from poison mask hi/lo planes."""
-    # Convert to grayscale if needed
-    if mask_hi.mode != 'L':
-        mask_hi = mask_hi.convert('L')
-    if mask_lo.mode != 'L':
-        mask_lo = mask_lo.convert('L')
-
-    hi_arr = np.asarray(mask_hi, dtype=np.uint16)
-    lo_arr = np.asarray(mask_lo, dtype=np.uint16)
-
-    # Reconstruct the encoded difference magnitude
-    encoded = (hi_arr << 8) | lo_arr
-    diff_magnitude = np.abs(encoded.astype(np.int32) - 32768)
-
-    # Amplify for visualization and convert to grayscale
-    amplified = np.clip(diff_magnitude * amplification / 128, 0, 255).astype(np.uint8)
-
-    return Image.fromarray(amplified, 'L')
 
 
-def _generate_layer_mask(previous: Image.Image, current: Image.Image, poison_mask_data: Optional[Dict[str, object]] = None) -> Image.Image:
-    """Generate visualization mask, preferring poison mask data if available."""
-    if poison_mask_data and POISON_MASK_AVAILABLE:
-        try:
-            # Use poison mask data for visualization
-            hi_path = Path(poison_mask_data["poison_mask_hi_path"])
-            lo_path = Path(poison_mask_data["poison_mask_lo_path"])
-
-            with Image.open(hi_path) as hi_img, Image.open(lo_path) as lo_img:
-                return _generate_layer_mask_from_poison(hi_img, lo_img)
-
-        except Exception as exc:
-            print(f"Warning: Failed to use poison mask for visualization, falling back to simple diff: {exc}")
-
-    # Fallback to original method
-    if previous.size != current.size:
-        previous = previous.resize(current.size, resample=Image.Resampling.BICUBIC)
-    prev_arr = np.asarray(previous.convert("RGB"), dtype=np.int16)
-    curr_arr = np.asarray(current.convert("RGB"), dtype=np.int16)
-    diff = np.abs(curr_arr - prev_arr)
-    diff_max = diff.max(axis=2)
-    amplified = np.clip(diff_max * 4, 0, 255).astype(np.uint8)
-    mask = Image.fromarray(amplified)
-    return mask if mask.mode == "L" else mask.convert("L")
-
-
-def _image_to_base64(image: Image.Image, format: str = "PNG") -> str:
-    """Convert PIL Image to base64-encoded string."""
-    buffer = BytesIO()
-    image.save(buffer, format=format)
-    buffer.seek(0)
-    img_bytes = buffer.getvalue()
-    return base64.b64encode(img_bytes).decode('utf-8')
 
 
 DEFAULT_WORKFLOW_CONFIG = ProtectionWorkflowConfig()
@@ -412,7 +320,6 @@ def _apply_layers(
         "description": "Unmodified input image",
         "path": str(base_path.resolve()),
         "processing_size": list(rgb_image.size),
-        "mask_path": None,
     })
     last_stage_path = base_path
 
@@ -434,25 +341,15 @@ def _apply_layers(
             image=saved_image,
             original=previous_saved,
             config=config,
-            target_dir=target_dir,
+            layer_dir=layer_dir,
             stage_name=f"{index:02d}-{stage.key}"
         )
-
-        mask_filename = f"{image_path.stem}_{stage.key}_mask.png"
-        mask_path = layer_dir / mask_filename
-        mask_image = _generate_layer_mask(previous_saved, saved_image, poison_mask_data)
-        mask_image.save(mask_path, format="PNG")
-
-        # Convert mask to base64
-        mask_base64 = _image_to_base64(mask_image, format="PNG")
 
         stage_data = {
             "stage": stage.key,
             "description": stage.description,
             "path": str(stage_path.resolve()),
             "processing_size": list(current.size),
-            "mask_path": str(mask_path.resolve()),
-            "mask_base64": mask_base64,
         }
 
         # Add poison mask data to stage info if available
@@ -479,14 +376,9 @@ def _apply_layers(
                 asset_id=image_path.stem,
             )
             signed_path = Path(c2pa_result["signed_path"])
-            mask_filename = f"{image_path.stem}_c2pa-manifest_mask.png"
-            mask_path = c2pa_dir / mask_filename
             with Image.open(signed_path) as final_image:
                 final_image.load()
                 final_rgb = final_image.convert("RGB")
-            mask_image = _generate_layer_mask(previous_saved, final_rgb)
-            mask_image.save(mask_path, format="PNG")
-            mask_base64 = _image_to_base64(mask_image, format="PNG")
             previous_saved = final_rgb
             last_stage_path = signed_path
             stages.append({
@@ -494,8 +386,6 @@ def _apply_layers(
                 "description": "Embedded C2PA AI training manifest and IPTC signal",
                 "path": str(signed_path.resolve()),
                 "processing_size": list(original.size),
-                "mask_path": str(mask_path.resolve()),
-                "mask_base64": mask_base64,
                 "manifest_path": str(Path(c2pa_result["manifest_path"]).resolve()),
                 "certificate_path": str(Path(c2pa_result["certificate_path"]).resolve()),
                 "license_path": (
@@ -507,17 +397,12 @@ def _apply_layers(
             })
         except Exception as exc:
             fallback_path = source_for_manifest.resolve(strict=False)
-            mask_filename = f"{image_path.stem}_c2pa-manifest_mask.png"
-            mask_path = c2pa_dir / mask_filename
             try:
                 with Image.open(fallback_path) as fallback_image:
                     fallback_image.load()
                     fallback_rgb = fallback_image.convert("RGB")
             except Exception:
                 fallback_rgb = previous_saved
-            mask_image = _generate_layer_mask(previous_saved, fallback_rgb)
-            mask_image.save(mask_path, format="PNG")
-            mask_base64 = _image_to_base64(mask_image, format="PNG")
             previous_saved = fallback_rgb
             stages.append({
                 "stage": "c2pa-manifest",
@@ -525,9 +410,29 @@ def _apply_layers(
                 "error": str(exc),
                 "path": str(fallback_path),
                 "processing_size": list(original.size),
-                "mask_path": str(mask_path.resolve()),
-                "mask_base64": mask_base64,
                 "artifact_dir": str(c2pa_dir.resolve()),
+            })
+
+    # Generate final comparison mask between final output and original input
+    if config.enable_poison_mask and POISON_MASK_AVAILABLE and previous_saved is not None:
+        final_dir = layers_dir / f"{len(stage_sequence)+1:02d}-final-comparison"
+        _ensure_directory(final_dir)
+
+        final_poison_mask_data = _apply_poison_mask_if_enabled(
+            image=previous_saved,
+            original=rgb_image,
+            config=config,
+            layer_dir=final_dir,
+            stage_name=f"{len(stage_sequence)+1:02d}-final-comparison"
+        )
+
+        if final_poison_mask_data:
+            stages.append({
+                "stage": "final-comparison",
+                "description": "Complete protection mask (final vs original)",
+                "path": None,
+                "processing_size": list(original.size),
+                **final_poison_mask_data
             })
 
     return stages
@@ -572,12 +477,12 @@ def _build_project_status(
         elif key == "poison-mask":
             # Check if any stage has poison mask data
             poison_applied = any(
-                "poison_mask_hi_path" in stage_record
+                "poison_mask_sac_path" in stage_record
                 for stage_record in stage_records
             )
             record.update({
                 "applied": poison_applied,
-                "evidence": "Poison mask files generated for protection stages." if poison_applied else None,
+                "evidence": "Poison mask files (SAC) generated for protection stages." if poison_applied else None,
             })
         elif key and key in stage_index:
             stage_record = stage_index[key]

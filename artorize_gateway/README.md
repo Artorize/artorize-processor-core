@@ -83,6 +83,30 @@ curl -X POST http://localhost:8765/v1/process/artwork \
   }'
 ```
 
+**Process Artwork with Backend Upload (NEW):**
+```bash
+curl -X POST http://localhost:8765/v1/process/artwork \
+  -F "file=@artwork.jpg" \
+  -F 'metadata={
+    "job_id": "unique-123",
+    "callback_url": "https://router.com/api/callbacks",
+    "callback_auth_token": "router-secret",
+    "backend_url": "https://backend.com",
+    "backend_auth_token": "backend-secret",
+    "artist_name": "Artist Name",
+    "artwork_title": "Artwork Title",
+    "artwork_description": "Description of the artwork",
+    "tags": ["abstract", "modern"],
+    "artwork_creation_time": "2025-10-11T12:00:00Z"
+  }'
+```
+
+**Backend Upload Mode:**
+- When `backend_url` is provided, the processor uploads directly to backend storage
+- Callback payload includes `backend_artwork_id` instead of URLs
+- Supports optional fields: `backend_auth_token`, `artwork_description`, `tags`, `artwork_creation_time`
+- Backward compatible: omit `backend_url` to use legacy storage mode
+
 **Legacy Job Submission:**
 ```bash
 # Submit image file
@@ -113,10 +137,14 @@ curl -X POST http://localhost:8765/v1/sac/encode/batch \
 
 ## API Documentation
 
+**Complete API Reference:**
+- **[API_REFERENCE.md](./API_REFERENCE.md)** - Complete API endpoint documentation
+
 **Integration Guides:**
-- **INTEGRATION_GUIDE.md** - Complete workflow for receiving SAC-encoded masks
-- **SAC_API_GUIDE.md** - SAC encoding endpoint reference
-- **sac_v_1_cdn_mask_transfer_protocol.md** - Binary format specification
+- **[BACKEND_UPLOAD_GUIDE.md](./BACKEND_UPLOAD_GUIDE.md)** - Direct backend upload integration (NEW)
+- **[INTEGRATION_GUIDE.md](./INTEGRATION_GUIDE.md)** - Complete workflow for receiving SAC-encoded masks
+- **[SAC_API_GUIDE.md](./SAC_API_GUIDE.md)** - SAC encoding endpoint reference
+- **[sac_v_1_cdn_mask_transfer_protocol.md](../sac_v_1_cdn_mask_transfer_protocol.md)** - Binary format specification
 
 **Interactive API Docs:**
 - **Swagger UI**: `http://localhost:8765/docs`
