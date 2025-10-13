@@ -212,6 +212,53 @@ def encode_mask_pair_from_npz(npz_path: Path) -> SACEncodeResult:
     return encode_mask_pair_from_arrays(hi_arr, lo_arr)
 
 
+def encode_single_array(
+    array: np.ndarray,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+) -> SACEncodeResult:
+    """
+    Encode a single array into SAC format by storing it in both slots.
+
+    This is a compatibility function for backends that expect separate hi/lo SAC files.
+    Since SAC v1 requires two arrays, we store the same array in both slots.
+
+    Args:
+        array: uint8 mask array
+        width: Optional width for validation
+        height: Optional height for validation
+
+    Returns:
+        SACEncodeResult with encoded binary data
+    """
+    # Infer dimensions if not provided
+    if width is None or height is None:
+        if array.ndim >= 2:
+            height, width = array.shape[:2]
+        else:
+            width = height = 0
+
+    # Convert uint8 to int16 for SAC encoding
+    array_int16 = array.astype(np.int16)
+
+    # Flatten
+    if array_int16.ndim > 1:
+        a_flat = array_int16.ravel()
+    else:
+        a_flat = array_int16
+
+    # Store the same data in both slots (SAC requires two arrays)
+    sac_bytes = build_sac(a_flat, a_flat, width, height)
+
+    return SACEncodeResult(
+        sac_bytes=sac_bytes,
+        width=width or 0,
+        height=height or 0,
+        length_a=len(a_flat),
+        length_b=len(a_flat),
+    )
+
+
 def _encode_single_mask_job(
     job_id: str,
     mask_hi_path: Path,

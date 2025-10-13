@@ -59,8 +59,7 @@ class BackendUploadClient:
         backend_url: str,
         original_image_path: Path,
         protected_image_path: Path,
-        mask_hi_path: Optional[Path],
-        mask_lo_path: Optional[Path],
+        mask_path: Optional[Path],
         analysis: Optional[Dict[str, Any]],
         summary: Dict[str, Any],
         metadata: Dict[str, Any],
@@ -73,8 +72,7 @@ class BackendUploadClient:
             backend_url: Base URL of backend API (e.g., http://localhost:3002)
             original_image_path: Path to original image file
             protected_image_path: Path to protected image file
-            mask_hi_path: Path to high-byte SAC mask (optional)
-            mask_lo_path: Path to low-byte SAC mask (optional)
+            mask_path: Path to combined SAC mask file (contains both hi/lo arrays)
             analysis: Analysis JSON data
             summary: Summary JSON data
             metadata: Artwork metadata (title, artist, description, tags, etc.)
@@ -93,6 +91,25 @@ class BackendUploadClient:
             logger.info('Using per-artwork authentication token for backend upload')
         else:
             logger.warning('No authentication token provided for backend upload')
+
+        # Validate required files
+        missing_files = []
+
+        if not original_image_path or not original_image_path.exists():
+            missing_files.append('original image')
+        if not protected_image_path or not protected_image_path.exists():
+            missing_files.append('protected image')
+        if not mask_path or not mask_path.exists():
+            missing_files.append('SAC mask file')
+        if not analysis:
+            missing_files.append('analysis JSON')
+        if not summary:
+            missing_files.append('summary JSON')
+
+        if missing_files:
+            error_msg = f"Required files missing for backend upload: {', '.join(missing_files)}"
+            logger.error(error_msg)
+            raise BackendUploadError(error_msg)
 
         # Prepare form data
         data = {
@@ -142,33 +159,24 @@ class BackendUploadClient:
             'image/jpeg',
         )
 
-        # Optional SAC masks
-        if mask_hi_path and mask_hi_path.exists():
-            files_to_upload['maskHi'] = (
-                mask_hi_path.name,
-                open(mask_hi_path, 'rb'),
-                'application/octet-stream',
-            )
-        if mask_lo_path and mask_lo_path.exists():
-            files_to_upload['maskLo'] = (
-                mask_lo_path.name,
-                open(mask_lo_path, 'rb'),
-                'application/octet-stream',
-            )
+        # Required SAC mask (combined hi/lo)
+        files_to_upload['mask'] = (
+            mask_path.name,
+            open(mask_path, 'rb'),
+            'application/octet-stream',
+        )
 
-        # Analysis and summary as JSON
-        if analysis:
-            files_to_upload['analysis'] = (
-                'analysis.json',
-                json.dumps(analysis, indent=2).encode('utf-8'),
-                'application/json',
-            )
-        if summary:
-            files_to_upload['summary'] = (
-                'summary.json',
-                json.dumps(summary, indent=2).encode('utf-8'),
-                'application/json',
-            )
+        # Required JSON files
+        files_to_upload['analysis'] = (
+            'analysis.json',
+            json.dumps(analysis, indent=2).encode('utf-8'),
+            'application/json',
+        )
+        files_to_upload['summary'] = (
+            'summary.json',
+            json.dumps(summary, indent=2).encode('utf-8'),
+            'application/json',
+        )
 
         # Upload with retry logic
         try:

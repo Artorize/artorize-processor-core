@@ -290,8 +290,7 @@ async def _send_callback_on_completion(
             # Find the original and final protected images
             original_image_path = job.input_path
             final_layer_path = None
-            mask_hi_path = None
-            mask_lo_path = None
+            mask_path = None
 
             if result.summary.get("layers"):
                 layers = result.summary["layers"]
@@ -299,18 +298,18 @@ async def _send_callback_on_completion(
                     final_layer = layers[-1]
                     final_layer_path = Path(final_layer.get("path", ""))
 
-                    # Look for SAC masks in the final layer's poison mask data
+                    # Look for combined SAC mask in the final layer's poison mask data
                     if "poison_mask_sac_path" in final_layer:
-                        # Look for hi/lo masks - check for the pattern in the output dir
-                        sac_path = Path(final_layer["poison_mask_sac_path"])
-                        poison_mask_dir = sac_path.parent
+                        mask_path = Path(final_layer["poison_mask_sac_path"])
 
-                        # Find mask files (hi and lo)
-                        for mask_file in poison_mask_dir.glob("*.sac"):
-                            if "hi" in mask_file.stem.lower():
-                                mask_hi_path = mask_file
-                            elif "lo" in mask_file.stem.lower():
-                                mask_lo_path = mask_file
+                    # Fallback: If not found in metadata, try to find by pattern
+                    if not mask_path or not mask_path.exists():
+                        # Look for mask.sac files in the layer directory
+                        if final_layer_path and final_layer_path.exists():
+                            layer_dir = final_layer_path.parent
+                            for mask_file in layer_dir.glob("*_mask.sac"):
+                                mask_path = mask_file
+                                break
 
             if not final_layer_path or not final_layer_path.exists():
                 raise RuntimeError("Final protected image not found")
@@ -343,8 +342,7 @@ async def _send_callback_on_completion(
                 backend_url=job.backend_url,
                 original_image_path=original_image_path,
                 protected_image_path=final_layer_path,
-                mask_hi_path=mask_hi_path,
-                mask_lo_path=mask_lo_path,
+                mask_path=mask_path,
                 analysis=result.analysis,
                 summary=result.summary,
                 metadata=upload_metadata,

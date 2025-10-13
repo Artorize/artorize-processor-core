@@ -219,26 +219,52 @@ def _apply_poison_mask_if_enabled(
         hi_arr = np.asarray(mask_result.hi_image, dtype=np.uint8)
         lo_arr = np.asarray(mask_result.lo_image, dtype=np.uint8)
 
+        # Save separate hi/lo PNG files for backend compatibility
+        hi_png_path = layer_dir / f"{stage_name}_mask_hi.png"
+        lo_png_path = layer_dir / f"{stage_name}_mask_lo.png"
+        mask_result.hi_image.save(hi_png_path)
+        mask_result.lo_image.save(lo_png_path)
+
         # Encode to SAC format and save in layer directory
         sac_path = layer_dir / f"{stage_name}_mask.sac"
+        sac_hi_path = layer_dir / f"{stage_name}_mask_hi.sac"
+        sac_lo_path = layer_dir / f"{stage_name}_mask_lo.sac"
         try:
-            from artorize_gateway.sac_encoder import encode_mask_pair_from_arrays
+            from artorize_gateway.sac_encoder import encode_mask_pair_from_arrays, encode_single_array
+            # Combined SAC file with both arrays
             sac_result = encode_mask_pair_from_arrays(hi_arr, lo_arr)
             sac_path.write_bytes(sac_result.sac_bytes)
             sac_size = len(sac_result.sac_bytes)
+
+            # Separate SAC files for backend compatibility
+            # The hi and lo masks are uint8 images, convert to int16 for SAC encoding
+            hi_int16 = hi_arr.astype(np.int16)
+            lo_int16 = lo_arr.astype(np.int16)
+            sac_hi_result = encode_single_array(hi_int16)
+            sac_lo_result = encode_single_array(lo_int16)
+            sac_hi_path.write_bytes(sac_hi_result.sac_bytes)
+            sac_lo_path.write_bytes(sac_lo_result.sac_bytes)
         except Exception as sac_exc:
             print(f"Warning: SAC encoding failed: {sac_exc}")
             sac_path = None
+            sac_hi_path = None
+            sac_lo_path = None
             sac_size = 0
 
         result_data = {
             "diff_stats": mask_result.diff_stats,
+            "poison_mask_hi_png": str(hi_png_path.resolve()),
+            "poison_mask_lo_png": str(lo_png_path.resolve()),
         }
 
         # Add SAC info if encoding succeeded
-        if sac_path:
+        if sac_path and sac_path.exists():
             result_data["poison_mask_sac_path"] = str(sac_path.resolve())
             result_data["sac_size_bytes"] = sac_size
+        if sac_hi_path and sac_hi_path.exists():
+            result_data["poison_mask_sac_hi_path"] = str(sac_hi_path.resolve())
+        if sac_lo_path and sac_lo_path.exists():
+            result_data["poison_mask_sac_lo_path"] = str(sac_lo_path.resolve())
 
         return result_data
 
