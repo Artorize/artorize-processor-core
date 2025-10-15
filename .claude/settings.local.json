@@ -12,7 +12,14 @@
       "Bash(git commit:*)",
       "Bash(py -3 -m artorize_runner.protection_pipeline)",
       "Bash(cat:*)",
-      "Bash(py:*)"
+      "Bash(py:*)",
+      "Bash(export PYTHONPATH=.)",
+      "Read(//d/**)",
+      "Bash(timeout:*)",
+      "Bash(curl -X POST http://127.0.0.1:8765/v1/images/extract-hashes -F \"file=@input/Mona_Lisa,_by_Leonardo_da_Vinci,_from_C2RMF_retouched.jpg\")",
+      "Bash(curl -X POST \"http://127.0.0.1:8765/v1/images/extract-hashes\" -H \"Content-Type: application/json\" -d '{\"\"local_path\"\": \"\"input/Mona_Lisa,_by_Leonardo_da_Vinci,_from_C2RMF_retouched.jpg\"\"}')",
+      "Bash(curl:*)",
+      "Bash(del TODO.md mod-processor.md)"
     ],
     "deny": [],
     "ask": []
