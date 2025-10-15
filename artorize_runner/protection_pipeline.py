@@ -245,7 +245,9 @@ def _apply_poison_mask_if_enabled(
             sac_hi_path.write_bytes(sac_hi_result.sac_bytes)
             sac_lo_path.write_bytes(sac_lo_result.sac_bytes)
         except Exception as sac_exc:
-            print(f"Warning: SAC encoding failed: {sac_exc}")
+            import traceback
+            print(f"Warning: SAC encoding failed for {stage_name}: {sac_exc}")
+            print(f"Traceback: {traceback.format_exc()}")
             sac_path = None
             sac_hi_path = None
             sac_lo_path = None
@@ -376,11 +378,13 @@ def _apply_layers(
             "description": stage.description,
             "path": str(stage_path.resolve()),
             "processing_size": list(current.size),
+            "is_protection_layer": True,  # Mark as protection layer for backend upload
         }
 
         # Add poison mask data to stage info if available
         if poison_mask_data:
             stage_data.update(poison_mask_data)
+            stage_data["has_sac_mask"] = True  # Explicitly mark that SAC mask exists
 
         stages.append(stage_data)
         last_stage_path = stage_path

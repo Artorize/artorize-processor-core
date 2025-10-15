@@ -295,8 +295,24 @@ async def _send_callback_on_completion(
             if result.summary.get("layers"):
                 layers = result.summary["layers"]
                 if layers:
-                    final_layer = layers[-1]
-                    final_layer_path = Path(final_layer.get("path", ""))
+                    # Find the last protection layer with SAC mask data
+                    final_layer = None
+                    for layer in reversed(layers):
+                        if layer.get("has_sac_mask"):
+                            final_layer = layer
+                            break
+
+                    # Fallback: find last protection layer without errors
+                    if not final_layer:
+                        for layer in reversed(layers):
+                            if layer.get("is_protection_layer") and not layer.get("error"):
+                                final_layer = layer
+                                break
+
+                    if not final_layer:
+                        raise RuntimeError("No valid protection layer found in processing results")
+
+                    final_layer_path = Path(final_layer["path"])
 
                     # Look for combined SAC mask in the final layer's poison mask data
                     if "poison_mask_sac_path" in final_layer:
@@ -393,8 +409,24 @@ async def _send_callback_on_completion(
             if result.summary.get("layers"):
                 layers = result.summary["layers"]
                 if layers:
-                    final_layer = layers[-1]
-                    final_layer_path = Path(final_layer.get("path", ""))
+                    # Find the last protection layer with SAC mask data
+                    final_layer = None
+                    for layer in reversed(layers):
+                        if layer.get("has_sac_mask"):
+                            final_layer = layer
+                            break
+
+                    # Fallback: find last protection layer without errors
+                    if not final_layer:
+                        for layer in reversed(layers):
+                            if layer.get("is_protection_layer") and not layer.get("error"):
+                                final_layer = layer
+                                break
+
+                    if not final_layer:
+                        raise RuntimeError("No valid protection layer found in processing results")
+
+                    final_layer_path = Path(final_layer["path"])
 
                     # Look for SAC mask in the final layer's poison mask data
                     if "poison_mask_sac_path" in final_layer:
