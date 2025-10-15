@@ -139,6 +139,8 @@ curl -X POST http://localhost:8765/v1/process/artwork \
 }
 ```
 
+**Note**: The `sac_mask_url` field is **always present** in the callback payload. Final comparison mask generation is mandatory for all processed images to enable provenance tracking.
+
 **Callback Payload (Error)**:
 
 ```json

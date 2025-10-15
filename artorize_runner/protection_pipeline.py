@@ -205,10 +205,19 @@ def _apply_poison_mask_if_enabled(
     original: Image.Image,
     config: ProtectionWorkflowConfig,
     layer_dir: Path,
-    stage_name: str
+    stage_name: str,
+    force: bool = False,
+    generate_sac: bool = False
 ) -> Optional[Dict[str, object]]:
-    """Apply poison mask processor if enabled and available."""
-    if not config.enable_poison_mask or not POISON_MASK_AVAILABLE:
+    """Apply poison mask processor if enabled and available.
+
+    Args:
+        force: If True, bypass the enable_poison_mask config check (for mandatory masks)
+        generate_sac: If True, generate SAC binary files (only for final comparison to save time)
+    """
+    if not force and not config.enable_poison_mask:
+        return None
+    if not POISON_MASK_AVAILABLE:
         return None
 
     try:
@@ -225,48 +234,42 @@ def _apply_poison_mask_if_enabled(
         mask_result.hi_image.save(hi_png_path)
         mask_result.lo_image.save(lo_png_path)
 
-        # Encode to SAC format and save in layer directory
-        sac_path = layer_dir / f"{stage_name}_mask.sac"
-        sac_hi_path = layer_dir / f"{stage_name}_mask_hi.sac"
-        sac_lo_path = layer_dir / f"{stage_name}_mask_lo.sac"
-        try:
-            from artorize_gateway.sac_encoder import encode_mask_pair_from_arrays, encode_single_array
-            # Combined SAC file with both arrays
-            sac_result = encode_mask_pair_from_arrays(hi_arr, lo_arr)
-            sac_path.write_bytes(sac_result.sac_bytes)
-            sac_size = len(sac_result.sac_bytes)
-
-            # Separate SAC files for backend compatibility
-            # The hi and lo masks are uint8 images, convert to int16 for SAC encoding
-            hi_int16 = hi_arr.astype(np.int16)
-            lo_int16 = lo_arr.astype(np.int16)
-            sac_hi_result = encode_single_array(hi_int16)
-            sac_lo_result = encode_single_array(lo_int16)
-            sac_hi_path.write_bytes(sac_hi_result.sac_bytes)
-            sac_lo_path.write_bytes(sac_lo_result.sac_bytes)
-        except Exception as sac_exc:
-            import traceback
-            print(f"Warning: SAC encoding failed for {stage_name}: {sac_exc}")
-            print(f"Traceback: {traceback.format_exc()}")
-            sac_path = None
-            sac_hi_path = None
-            sac_lo_path = None
-            sac_size = 0
-
         result_data = {
             "diff_stats": mask_result.diff_stats,
             "poison_mask_hi_png": str(hi_png_path.resolve()),
             "poison_mask_lo_png": str(lo_png_path.resolve()),
         }
 
-        # Add SAC info if encoding succeeded
-        if sac_path and sac_path.exists():
-            result_data["poison_mask_sac_path"] = str(sac_path.resolve())
-            result_data["sac_size_bytes"] = sac_size
-        if sac_hi_path and sac_hi_path.exists():
-            result_data["poison_mask_sac_hi_path"] = str(sac_hi_path.resolve())
-        if sac_lo_path and sac_lo_path.exists():
-            result_data["poison_mask_sac_lo_path"] = str(sac_lo_path.resolve())
+        # Only encode to SAC format if requested (final comparison only)
+        if generate_sac:
+            sac_path = layer_dir / f"{stage_name}_mask.sac"
+            sac_hi_path = layer_dir / f"{stage_name}_mask_hi.sac"
+            sac_lo_path = layer_dir / f"{stage_name}_mask_lo.sac"
+            try:
+                from artorize_gateway.sac_encoder import encode_mask_pair_from_arrays, encode_single_array
+                # Combined SAC file with both arrays
+                sac_result = encode_mask_pair_from_arrays(hi_arr, lo_arr)
+                sac_path.write_bytes(sac_result.sac_bytes)
+                sac_size = len(sac_result.sac_bytes)
+
+                # Separate SAC files for backend compatibility
+                # The hi and lo masks are uint8 images, convert to int16 for SAC encoding
+                hi_int16 = hi_arr.astype(np.int16)
+                lo_int16 = lo_arr.astype(np.int16)
+                sac_hi_result = encode_single_array(hi_int16)
+                sac_lo_result = encode_single_array(lo_int16)
+                sac_hi_path.write_bytes(sac_hi_result.sac_bytes)
+                sac_lo_path.write_bytes(sac_lo_result.sac_bytes)
+
+                # Add SAC info to result
+                result_data["poison_mask_sac_path"] = str(sac_path.resolve())
+                result_data["sac_size_bytes"] = sac_size
+                result_data["poison_mask_sac_hi_path"] = str(sac_hi_path.resolve())
+                result_data["poison_mask_sac_lo_path"] = str(sac_lo_path.resolve())
+            except Exception as sac_exc:
+                import traceback
+                print(f"Warning: SAC encoding failed for {stage_name}: {sac_exc}")
+                print(f"Traceback: {traceback.format_exc()}")
 
         return result_data
 
@@ -443,8 +446,9 @@ def _apply_layers(
                 "artifact_dir": str(c2pa_dir.resolve()),
             })
 
-    # Generate final comparison mask between final output and original input
-    if config.enable_poison_mask and POISON_MASK_AVAILABLE and previous_saved is not None:
+    # Generate final comparison mask between final output and original input (MANDATORY)
+    # This mask traces back to the original image and is required for provenance
+    if POISON_MASK_AVAILABLE and previous_saved is not None:
         final_dir = layers_dir / f"{len(stage_sequence)+1:02d}-final-comparison"
         _ensure_directory(final_dir)
 
@@ -453,7 +457,9 @@ def _apply_layers(
             original=rgb_image,
             config=config,
             layer_dir=final_dir,
-            stage_name=f"{len(stage_sequence)+1:02d}-final-comparison"
+            stage_name=f"{len(stage_sequence)+1:02d}-final-comparison",
+            force=True,  # Final comparison is mandatory for provenance
+            generate_sac=True  # Only generate SAC for final comparison (sent to backend)
         )
 
         if final_poison_mask_data:

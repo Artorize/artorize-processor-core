@@ -164,8 +164,14 @@ outputs/<job-id>/
 │   ├── 02-photoguard/
 │   ├── 03-mist/
 │   ├── 04-nightshade/
-│   └── 05-invisible-watermark/
-├── poison_mask/          # Poison mask files (NEW)
+│   ├── 05-invisible-watermark/
+│   └── XX-final-comparison/  # Final comparison (MANDATORY)
+│       ├── *_mask_hi.png
+│       ├── *_mask_lo.png
+│       ├── *_mask_hi.sac
+│       ├── *_mask_lo.sac
+│       └── *_mask.sac    # Primary final comparison SAC
+├── poison_mask/          # Poison mask files (if enabled)
 │   ├── *_mask_hi.png     # High-byte mask planes
 │   ├── *_mask_lo.png     # Low-byte mask planes
 │   ├── *_mask_planes.npz # Compressed NumPy arrays
@@ -175,7 +181,10 @@ outputs/<job-id>/
 ```
 
 **Key Files:**
-- `*_mask.sac` - **SAC-encoded mask for CDN delivery** (auto-generated)
+- `XX-final-comparison/*_mask.sac` - **MANDATORY final comparison SAC mask** (always generated)
+  - Compares final protected image to original for complete provenance tracking
+  - Cannot be disabled via configuration
+- `*_mask.sac` - SAC-encoded per-stage masks (optional, controlled by `enable_poison_mask`)
 - `*_mask_hi.png`, `*_mask_lo.png` - Dual-plane poison masks
 - `*_mask_planes.npz` - Efficient compressed storage
 
