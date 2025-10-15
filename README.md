@@ -7,6 +7,7 @@ Image protection pipeline that applies multiple adversarial perturbations (Fawke
 **Python Version**: 3.12.10 (required for blockhash compatibility)
 
 > **Note**: This project requires Python 3.12.10 or compatible 3.12.x versions. The `blockhash` library is not compatible with Python 3.13+.
+> PyTorch does not yet publish wheels for Python 3.13, so GPU acceleration will only install on Python 3.12 builds.
 
 ## Quick Start
 
@@ -14,6 +15,8 @@ Image protection pipeline that applies multiple adversarial perturbations (Fawke
 ```powershell
 py -3.12 -m pip install -r requirements.txt
 ```
+
+The requirements file already points pip to the official PyTorch wheel indices (`cu121` for CUDA builds and `cpu` for CPU-only installs). No manual `--index-url` flags are necessary unless you are behind a proxy.
 
 ### Basic Usage
 ```powershell
@@ -29,6 +32,14 @@ py -3.12 -m artorize_runner.cli path\to\image.jpg --json-out report.json
 # Start HTTP API server
 py -3.12 -m artorize_gateway --host 0.0.0.0 --port 8000
 ```
+
+### GPU Pipeline Checklist
+- Confirm you are using Python 3.12.x. On newer interpreters the PyTorch pins are skipped and the GPU pipeline will fall back to CPU mode.
+- Ensure CUDA 12.1 drivers (or the CPU-only PyTorch wheel) are available before installing `requirements.txt`.
+- If you see `PyTorch stack not available... GPU acceleration disabled`, reinstall PyTorch/torchvision following the quick start above and verify by running  
+  `py -3.12 -m artorize_runner.protection_pipeline_gpu --no-analysis --workers 1`.
+- The GPU script can also be invoked directly (`py -3.12 artorize_runner\protection_pipeline_gpu.py`) thanks to the updated import guards, though the `-m` module form is preferred.
+- For multi-GPU systems set `CUDA_VISIBLE_DEVICES` before launching the pipeline to target a specific device.
 
 ### Testing
 ```powershell

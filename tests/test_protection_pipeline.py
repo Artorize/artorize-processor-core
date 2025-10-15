@@ -30,14 +30,15 @@ def test_run_full_workflow_creates_layers_and_summary():
         assert "invisible-watermark" in stage_names
 
         for layer in layers:
+            # Check layer image exists (except for final-comparison which has no path)
             layer_path = layer.get("path")
-            assert layer_path and Path(layer_path).exists(), "Layer image missing."
+            if layer.get("stage") != "final-comparison":
+                assert layer_path and Path(layer_path).exists(), "Layer image missing."
 
-            if layer.get("stage") == "original":
-                assert layer.get("mask_path") is None, "Original stage should not include a mask."
-            else:
-                mask_path = layer.get("mask_path")
-                assert mask_path and Path(mask_path).exists(), "Layer mask missing."
+            # Check for poison mask SAC files (except original and final-comparison)
+            if layer.get("stage") not in ("original", "final-comparison"):
+                sac_path = layer.get("poison_mask_sac_path")
+                assert sac_path and Path(sac_path).exists(), "Poison mask SAC file missing."
 
         projects = {project["name"]: project for project in data.get("projects", [])}
         assert projects["Fawkes"]["applied"] is True
