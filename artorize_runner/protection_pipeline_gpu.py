@@ -472,8 +472,9 @@ def _apply_layers_batched(
                 "artifact_dir": str(c2pa_dir.resolve()),
             })
 
-    # Generate final comparison mask between final output and original input
-    if config.enable_poison_mask and POISON_MASK_AVAILABLE and previous_saved is not None:
+    # Generate final comparison mask between final output and original input (MANDATORY)
+    # This mask traces back to the original image and is required for provenance
+    if POISON_MASK_AVAILABLE and previous_saved is not None:
         final_dir = layers_dir / f"{len(stage_sequence)+1:02d}-final-comparison"
         _ensure_directory(final_dir)
 
@@ -482,7 +483,9 @@ def _apply_layers_batched(
             original=rgb_image,
             config=config,
             layer_dir=final_dir,
-            stage_name=f"{len(stage_sequence)+1:02d}-final-comparison"
+            stage_name=f"{len(stage_sequence)+1:02d}-final-comparison",
+            force=True,  # Final comparison is mandatory for provenance
+            generate_sac=True  # Only generate SAC for final comparison (sent to backend)
         )
 
         if final_poison_mask_data:

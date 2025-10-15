@@ -181,4 +181,4 @@ cython_debug/
 .cursorindexingignore
 
 /outputs/
-/outputs_gpu_test/
+/outputs/outputs_gpu_test/
