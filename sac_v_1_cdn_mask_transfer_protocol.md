@@ -1,6 +1,6 @@
 # SAC v1 — Simple Array Container for CDN Delivery
 
-*A compact binary protocol for shipping two signed 16‑bit arrays from a Python backend to a webpage via your CDN.*
+*A compact binary protocol for shipping signed 16‑bit arrays from a Python backend to a webpage via your CDN.*
 
 ---
 
@@ -10,8 +10,9 @@ When you compute per‑pixel data (e.g., masks, flow fields, depth slices) on th
 **Key properties**
 - **Tiny header** (24 bytes) + raw payload
 - **Fixed little‑endian** for portability
-- **Two arrays per file** (A and B), both `int16`
+- **One or two arrays per file** (A, or A+B), both `int16`
 - **Optional image shape** in header to sanity‑check lengths
+- **SAC v1.1**: Single-array flag for 50% size reduction when A=B
 - CDN‑friendly: strong caching, content compression, byte-range support
 
 ---
@@ -26,28 +27,33 @@ When you compute per‑pixel data (e.g., masks, flow fields, depth slices) on th
 
 ---
 
-## Binary layout (SAC v1)
+## Binary layout (SAC v1 / v1.1)
 All integers are **little‑endian**. Offsets in bytes.
 
 ```
 Offset  Size  Field                 Type         Notes
 ------  ----  --------------------  -----------  -----------------------------------------
 0       4     magic                 char[4]      ASCII "SAC1"
-4       1     flags                 uint8        bit0=0 (reserved), bit1=0 (reserved)
+4       1     flags                 uint8        bit0=SINGLE_ARRAY (v1.1), bit1-7=reserved
 5       1     dtype_code            uint8        1 = int16 (required in v1)
-6       1     arrays_count          uint8        must be 2 in v1
+6       1     arrays_count          uint8        1 (v1.1 single) or 2 (v1.0 dual)
 7       1     reserved              uint8        set to 0
 8       4     length_a              uint32       number of elements in array A
 12      4     length_b              uint32       number of elements in array B
 16      4     width                 uint32       optional; set 0 if unknown
 20      4     height                uint32       optional; set 0 if unknown
 24      2*Na  payload_a             int16[Na]    Na = length_a
-24+2Na  2*Nb  payload_b             int16[Nb]    Nb = length_b
+[24+2Na]  2*Nb  payload_b           int16[Nb]    Nb = length_b (omitted if SINGLE_ARRAY flag set)
 ```
 
 **Validation rules**
-- `magic == "SAC1"`, `dtype_code == 1`, `arrays_count == 2`.
-- If `width*height != 0`, then `length_a == width*height` and `length_b == width*height`.
+- `magic == "SAC1"`, `dtype_code == 1`
+- **SAC v1.0** (dual array): `flags == 0`, `arrays_count == 2`, both payloads present
+- **SAC v1.1** (single array): `flags & 0x01 == 1`, `arrays_count == 1`, only payload_a present, `length_b == length_a` (decoder should duplicate A to get B)
+- If `width*height != 0`, then `length_a == width*height` (and `length_b == width*height` in v1.0)
+
+**SAC v1.1 optimization (FLAG_SINGLE_ARRAY = 0x01)**:
+When array A and B are identical (common for grayscale masks), set bit 0 of flags and omit array B from the file. This **reduces file size by 50%** with zero quality loss. Decoders check this flag and duplicate array A if set.
 
 ---
 
@@ -129,24 +135,35 @@ function parseSAC(buffer) {
   const flags = dv.getUint8(4);
   const dtype = dv.getUint8(5);
   const arraysCount = dv.getUint8(6);
-  if (dtype !== 1 || arraysCount !== 2) throw new Error('Unsupported SAC variant');
+  if (dtype !== 1) throw new Error('Unsupported dtype');
+  if (arraysCount !== 1 && arraysCount !== 2) throw new Error('Unsupported arrays_count');
+
   const lengthA = dv.getUint32(8, true);
   const lengthB = dv.getUint32(12, true);
   const width   = dv.getUint32(16, true);
   const height  = dv.getUint32(20, true);
 
+  const singleArray = (flags & 0x01) !== 0;  // SAC v1.1 single-array mode
   const offA = 24;
-  const offB = offA + lengthA * 2;
-  if (offB + lengthB * 2 !== buffer.byteLength) throw new Error('Length mismatch');
 
-  // Typed views: Browsers are little‑endian in practice.
-  const a = new Int16Array(buffer, offA, lengthA);
-  const b = new Int16Array(buffer, offB, lengthB);
+  let a, b;
+  if (singleArray) {
+    // SAC v1.1: only array A present, B is duplicate
+    if (offA + lengthA * 2 !== buffer.byteLength) throw new Error('Length mismatch (single array)');
+    a = new Int16Array(buffer, offA, lengthA);
+    b = a;  // Share the same array reference
+  } else {
+    // SAC v1.0: both arrays present
+    const offB = offA + lengthA * 2;
+    if (offB + lengthB * 2 !== buffer.byteLength) throw new Error('Length mismatch (dual array)');
+    a = new Int16Array(buffer, offA, lengthA);
+    b = new Int16Array(buffer, offB, lengthB);
+  }
 
-  if (width && height && (lengthA !== width*height || lengthB !== width*height)) {
+  if (width && height && lengthA !== width*height) {
     throw new Error('Shape mismatch');
   }
-  return { a, b, width, height, flags };
+  return { a, b, width, height, flags, singleArray };
 }
 ```
 

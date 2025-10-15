@@ -405,12 +405,14 @@ def _apply_layers_batched(
             "path": str(stage_path.resolve()),
             "processing_size": list(current.size),
             "processing_time": stage_times[stage.key],
-            "gpu_accelerated": use_gpu and TORCH_AVAILABLE
+            "gpu_accelerated": use_gpu and TORCH_AVAILABLE,
+            "is_protection_layer": True,  # Mark as protection layer for backend upload
         }
 
         # Add poison mask data to stage info if available
         if poison_mask_data:
             stage_data.update(poison_mask_data)
+            stage_data["has_sac_mask"] = True  # Explicitly mark that SAC mask exists
 
         stages.append(stage_data)
         last_stage_path = stage_path

@@ -17,6 +17,9 @@ SAC_MAGIC = b"SAC1"
 DTYPE_INT16 = 1
 DIFF_OFFSET = 32768  # center of uint16 range for signed diff packing
 
+# Flag bits
+FLAG_SINGLE_ARRAY = 0x01  # Bit 0: if set, array B is omitted (A and B are identical)
+
 
 @dataclass
 class SACEncodeResult:
@@ -36,44 +39,72 @@ def to_c_contiguous_i16(x: np.ndarray) -> np.ndarray:
     return x
 
 
-def build_sac(a: np.ndarray, b: np.ndarray, width: int = 0, height: int = 0) -> bytes:
+def build_sac(a: np.ndarray, b: np.ndarray, width: int = 0, height: int = 0, single_array: bool = True) -> bytes:
     """
-    Build SAC v1 binary from two int16 arrays.
+    Build SAC v1.1 binary from one or two int16 arrays.
 
     Args:
         a: First int16 array (will be flattened)
-        b: Second int16 array (will be flattened)
+        b: Second int16 array (will be flattened) - ignored if single_array=True
         width: Optional image width for validation
         height: Optional image height for validation
+        single_array: If True, only store array A (50% size reduction). Default: True
 
     Returns:
-        Binary SAC v1 data ready for CDN upload
+        Binary SAC v1.1 data ready for CDN upload
 
     Raises:
         AssertionError: If width*height validation fails
+
+    Note:
+        SAC v1.1 adds FLAG_SINGLE_ARRAY (0x01) to omit duplicate arrays.
+        Decoders should check this flag and duplicate array A if set.
     """
     a = to_c_contiguous_i16(a)
-    b = to_c_contiguous_i16(b)
     length_a = int(a.size)
-    length_b = int(b.size)
 
     if width and height:
         assert length_a == width * height, f"A length {length_a} != width*height {width*height}"
-        assert length_b == width * height, f"B length {length_b} != width*height {width*height}"
 
-    header = struct.pack(
-        '<4sBBBBIIII',
-        SAC_MAGIC,      # 4s
-        0,              # flags
-        DTYPE_INT16,    # dtype_code
-        2,              # arrays_count
-        0,              # reserved
-        length_a,       # uint32
-        length_b,       # uint32
-        width,          # uint32
-        height          # uint32
-    )
-    return header + a.tobytes(order='C') + b.tobytes(order='C')
+    if single_array:
+        # SAC v1.1: Single array mode (grayscale masks)
+        flags = FLAG_SINGLE_ARRAY
+        arrays_count = 1
+        length_b = length_a  # Decoder should duplicate A
+        header = struct.pack(
+            '<4sBBBBIIII',
+            SAC_MAGIC,      # 4s
+            flags,          # flags (0x01 = single array)
+            DTYPE_INT16,    # dtype_code
+            arrays_count,   # arrays_count (1)
+            0,              # reserved
+            length_a,       # uint32
+            length_b,       # uint32 (same as length_a)
+            width,          # uint32
+            height          # uint32
+        )
+        return header + a.tobytes(order='C')
+    else:
+        # SAC v1.0: Dual array mode (legacy)
+        b = to_c_contiguous_i16(b)
+        length_b = int(b.size)
+
+        if width and height:
+            assert length_b == width * height, f"B length {length_b} != width*height {width*height}"
+
+        header = struct.pack(
+            '<4sBBBBIIII',
+            SAC_MAGIC,      # 4s
+            0,              # flags (0x00 = dual array)
+            DTYPE_INT16,    # dtype_code
+            2,              # arrays_count (2)
+            0,              # reserved
+            length_a,       # uint32
+            length_b,       # uint32
+            width,          # uint32
+            height          # uint32
+        )
+        return header + a.tobytes(order='C') + b.tobytes(order='C')
 
 
 def encode_mask_pair_from_images(
@@ -114,14 +145,11 @@ def encode_mask_pair_from_images(
     encoded = (hi_u16 << 8) | lo_u16
     diff = (encoded.astype(np.int32) - DIFF_OFFSET).astype(np.int16)
 
-    # For SAC, we can store the diff directly as int16
-    # Or split back into components if needed - let's store as two planes
-    # matching the original encoding scheme
+    # Extract first channel if RGB, otherwise use grayscale
     a_flat = diff[:, :, 0].ravel() if diff.ndim == 3 else diff.ravel()
-    b_flat = diff[:, :, 1].ravel() if diff.ndim == 3 and diff.shape[2] > 1 else diff.ravel()
 
-    # Build SAC
-    sac_bytes = build_sac(a_flat, b_flat, width, height)
+    # Build SAC with single array mode (50% smaller)
+    sac_bytes = build_sac(a_flat, a_flat, width, height, single_array=True)
 
     return SACEncodeResult(
         sac_bytes=sac_bytes,
@@ -142,8 +170,8 @@ def encode_mask_pair_from_arrays(
     Encode mask hi/lo arrays directly into SAC format.
 
     Args:
-        hi_array: High-byte mask array (uint8)
-        lo_array: Low-byte mask array (uint8)
+        hi_array: High-byte mask array (uint8, grayscale or RGB)
+        lo_array: Low-byte mask array (uint8, grayscale or RGB)
         width: Optional width for validation
         height: Optional height for validation
 
@@ -152,6 +180,10 @@ def encode_mask_pair_from_arrays(
 
     Raises:
         ValueError: If arrays have mismatched shapes
+
+    Note:
+        Grayscale masks (H, W) are preferred for optimal file size (3x smaller).
+        RGB masks are supported but will only encode the first channel.
     """
     if hi_array.shape != lo_array.shape:
         raise ValueError(
@@ -171,24 +203,24 @@ def encode_mask_pair_from_arrays(
     encoded = (hi_u16 << 8) | lo_u16
     diff = (encoded.astype(np.int32) - DIFF_OFFSET).astype(np.int16)
 
-    # Flatten and split by channel if multi-channel
+    # Handle channel dimensions
     if diff.ndim == 3 and diff.shape[2] > 1:
-        # Multi-channel: use first two channels
+        # Multi-channel (legacy RGB): extract first channel only
+        # Note: Current poison mask processor generates grayscale masks
         a_flat = diff[:, :, 0].ravel()
-        b_flat = diff[:, :, 1].ravel() if diff.shape[2] > 1 else diff[:, :, 0].ravel()
     else:
-        # Single channel: duplicate
+        # Grayscale (standard): single array mode
         a_flat = diff.ravel()
-        b_flat = diff.ravel()
 
-    sac_bytes = build_sac(a_flat, b_flat, width, height)
+    # Use single_array=True for optimal size (50% smaller)
+    sac_bytes = build_sac(a_flat, a_flat, width, height, single_array=True)
 
     return SACEncodeResult(
         sac_bytes=sac_bytes,
         width=width or 0,
         height=height or 0,
         length_a=len(a_flat),
-        length_b=len(b_flat),
+        length_b=len(a_flat),  # Same as A in single-array mode
     )
 
 
@@ -224,13 +256,18 @@ def encode_single_array(
     Since SAC v1 requires two arrays, we store the same array in both slots.
 
     Args:
-        array: uint8 mask array
+        array: uint8 mask array (grayscale or RGB - will extract first channel if RGB)
         width: Optional width for validation
         height: Optional height for validation
 
     Returns:
         SACEncodeResult with encoded binary data
     """
+    # Handle multi-channel arrays by extracting first channel
+    if array.ndim == 3 and array.shape[2] > 1:
+        # RGB or multi-channel: extract first channel only
+        array = array[:, :, 0]
+
     # Infer dimensions if not provided
     if width is None or height is None:
         if array.ndim >= 2:
@@ -238,7 +275,7 @@ def encode_single_array(
         else:
             width = height = 0
 
-    # Convert uint8 to int16 for SAC encoding
+    # Convert to int16 for SAC encoding
     array_int16 = array.astype(np.int16)
 
     # Flatten
@@ -247,8 +284,8 @@ def encode_single_array(
     else:
         a_flat = array_int16
 
-    # Store the same data in both slots (SAC requires two arrays)
-    sac_bytes = build_sac(a_flat, a_flat, width, height)
+    # Use single array mode for optimal size (50% smaller)
+    sac_bytes = build_sac(a_flat, a_flat, width, height, single_array=True)
 
     return SACEncodeResult(
         sac_bytes=sac_bytes,
