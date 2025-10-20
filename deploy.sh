@@ -29,7 +29,7 @@ PYTHON_VERSION="3.12"
 APP_USER="artorize"
 APP_DIR="/opt/artorize-processor"
 VENV_DIR="${APP_DIR}/venv"
-SERVICE_NAME="artorize-gateway"
+SERVICE_NAME="artorize-processor"
 GATEWAY_PORT="8765"
 LOG_DIR="/var/log/artorize"
 
