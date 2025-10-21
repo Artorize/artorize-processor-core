@@ -4,6 +4,10 @@
 # Debian 12 / Ubuntu 22.04+ Compatible
 #
 # Usage: curl -fsSL https://raw.githubusercontent.com/Artorize/artorize-processor-core/main/deploy.sh | sudo bash
+#
+# Redeployment: This script can be run multiple times safely.
+# On redeployment, only .env configuration is preserved.
+# All other files are cleared for a clean installation.
 ###########################################
 
 set -e  # Exit on error
@@ -39,7 +43,10 @@ info "Starting Artorize Processor deployment..."
 ###########################################
 info "Installing system dependencies..."
 
+info "Running apt-get update..."
 apt-get update
+
+info "Installing build tools and libraries..."
 apt-get install -y \
     software-properties-common \
     build-essential \
@@ -54,6 +61,8 @@ apt-get install -y \
     python3-venv \
     libffi-dev \
     libssl-dev
+
+info "System dependencies installed successfully"
 
 ###########################################
 # 2. Python 3.12 Installation
@@ -70,14 +79,20 @@ if ! command -v python3.12 &> /dev/null; then
         apt-get install -y python3.12 python3.12-venv python3.12-dev
     else
         # Build from source (Debian)
-        info "Building Python 3.12 from source..."
+        info "Building Python 3.12 from source (this may take 5-10 minutes)..."
         cd /tmp
-        wget -q https://www.python.org/ftp/python/3.12.10/Python-3.12.10.tgz
+        info "Downloading Python 3.12.10..."
+        wget --progress=bar:force https://www.python.org/ftp/python/3.12.10/Python-3.12.10.tgz
+        info "Extracting archive..."
         tar -xf Python-3.12.10.tgz
         cd Python-3.12.10
-        ./configure --enable-optimizations --quiet
-        make -j$(nproc) --quiet
-        make altinstall --quiet
+        info "Configuring build with optimizations..."
+        ./configure --enable-optimizations
+        info "Compiling Python (using $(nproc) cores)..."
+        make -j$(nproc)
+        info "Installing Python 3.12..."
+        make altinstall
+        info "Cleaning up build files..."
         cd / && rm -rf /tmp/Python-3.12.10*
     fi
 fi
@@ -104,46 +119,46 @@ fi
 ###########################################
 # 4. Clone Repository
 ###########################################
-info "Cloning repository to $APP_DIR..."
+info "Preparing deployment directory..."
 
-# Backup .env if exists
+# Backup .env ONLY (clear all other files for clean redeployment)
 ENV_BACKUP=""
 if [ -f "$APP_DIR/.env" ]; then
     ENV_BACKUP=$(mktemp)
     cp "$APP_DIR/.env" "$ENV_BACKUP"
-    info "Backed up existing .env"
+    info "✓ Backed up existing .env configuration"
 fi
 
-# Backup data directories
-for dir in outputs gateway_jobs input; do
-    if [ -d "$APP_DIR/$dir" ]; then
-        mv "$APP_DIR/$dir" "/tmp/artorize-$dir-backup" 2>/dev/null || true
-    fi
-done
+# Clean installation directory (remove everything for fresh deployment)
+if [ -d "$APP_DIR" ]; then
+    info "Clearing old installation at $APP_DIR..."
+    rm -rf "$APP_DIR"
+    info "✓ Removed old installation"
+fi
 
 # Clone fresh copy
-rm -rf "$APP_DIR"
-git clone --depth 1 "$REPO_URL" "$APP_DIR"
+info "Cloning repository from $REPO_URL..."
+git clone --depth 1 --progress "$REPO_URL" "$APP_DIR"
+echo ""
 
-# Restore data directories
+# Create fresh data directories
+info "Creating data directories..."
 for dir in outputs gateway_jobs input; do
-    if [ -d "/tmp/artorize-$dir-backup" ]; then
-        mv "/tmp/artorize-$dir-backup" "$APP_DIR/$dir"
-    else
-        mkdir -p "$APP_DIR/$dir"
-    fi
+    mkdir -p "$APP_DIR/$dir"
+    info "  ✓ Created $dir/"
 done
 
-# Restore .env
+# Restore .env configuration
 if [ -n "$ENV_BACKUP" ] && [ -f "$ENV_BACKUP" ]; then
     cp "$ENV_BACKUP" "$APP_DIR/.env"
     rm "$ENV_BACKUP"
-    info "Restored .env configuration"
+    info "✓ Restored .env configuration"
 fi
 
 # Create log directory
 mkdir -p "$LOG_DIR"
 chown -R $APP_USER:$APP_USER "$APP_DIR" "$LOG_DIR"
+info "✓ Set permissions for $APP_USER"
 
 ###########################################
 # 5. Python Virtual Environment
@@ -161,12 +176,40 @@ VENV_PY_VER=$($VENV_DIR/bin/python --version | awk '{print $2}' | cut -d. -f1,2)
 [[ "$VENV_PY_VER" != "3.12" ]] && error "Virtual environment not using Python 3.12 (found: $VENV_PY_VER)"
 
 info "Installing Python dependencies..."
-sudo -u $APP_USER $VENV_DIR/bin/pip install --quiet --upgrade pip setuptools wheel
-sudo -u $APP_USER $VENV_DIR/bin/pip install --quiet -r $APP_DIR/requirements.txt
+info "Upgrading pip, setuptools, and wheel..."
+sudo -u $APP_USER $VENV_DIR/bin/pip install --upgrade pip setuptools wheel
+
+info "Installing packages from requirements.txt..."
+info "This will show all downloaded packages and their versions..."
+echo ""
+sudo -u $APP_USER $VENV_DIR/bin/pip install -v -r $APP_DIR/requirements.txt
+echo ""
+info "Package installation complete"
 
 # Verify critical imports
-sudo -u $APP_USER $VENV_DIR/bin/python -c "import blockhash, PIL, fastapi" || \
-    error "Failed to import critical dependencies"
+info "Verifying critical dependencies..."
+
+# Check future module (required by blockhash)
+if ! sudo -u $APP_USER $VENV_DIR/bin/python -c "import future" 2>/dev/null; then
+    error "Failed to import 'future' module (required by blockhash)"
+fi
+
+# Check blockhash (depends on future)
+if ! sudo -u $APP_USER $VENV_DIR/bin/python -c "import blockhash" 2>/dev/null; then
+    error "Failed to import 'blockhash' module"
+fi
+
+# Check other critical imports
+if ! sudo -u $APP_USER $VENV_DIR/bin/python -c "import PIL, fastapi" 2>/dev/null; then
+    error "Failed to import PIL or fastapi"
+fi
+
+info "✓ All critical dependencies verified (future, blockhash, PIL, fastapi)"
+
+info "Listing installed packages..."
+echo ""
+sudo -u $APP_USER $VENV_DIR/bin/pip list
+echo ""
 
 info "Virtual environment ready"
 
@@ -288,58 +331,102 @@ info "Services created and enabled"
 # 8. Start Services
 ###########################################
 info "Starting services..."
+echo ""
 
+info "Restarting gateway service..."
 systemctl restart $GATEWAY_SERVICE
+info "Restarting runner service..."
 systemctl restart $RUNNER_SERVICE
+
+info "Waiting for services to initialize..."
 sleep 3
 
 # Check gateway status
+echo ""
+info "Checking gateway service status..."
 if systemctl is-active --quiet $GATEWAY_SERVICE; then
-    info "✓ Gateway service started"
+    info "✓ Gateway service started successfully"
+    systemctl status $GATEWAY_SERVICE --no-pager -l | head -10
 else
-    warn "✗ Gateway service failed. Check: journalctl -u ${GATEWAY_SERVICE} -n 50"
-    exit 1
+    warn "✗ Gateway service failed to start"
+    echo ""
+    warn "Recent gateway logs:"
+    journalctl -u ${GATEWAY_SERVICE} -n 20 --no-pager
+    error "Gateway service failed. Check logs above."
 fi
 
 # Check runner status (non-fatal)
+echo ""
+info "Checking runner service status..."
 if systemctl is-active --quiet $RUNNER_SERVICE; then
-    info "✓ Runner service started"
+    info "✓ Runner service started successfully"
+    systemctl status $RUNNER_SERVICE --no-pager -l | head -10
 else
-    warn "✗ Runner service failed. Check: journalctl -u ${RUNNER_SERVICE} -n 50"
+    warn "✗ Runner service failed to start"
     warn "Note: Runner is optional if using gateway's internal workers"
+    echo ""
+    warn "Recent runner logs:"
+    journalctl -u ${RUNNER_SERVICE} -n 20 --no-pager
 fi
 
 # Health check
-info "Running health check..."
+echo ""
+info "Running API health check..."
 sleep 2
 if curl -f http://localhost:8765/health &> /dev/null; then
-    info "✓ Health check passed"
+    info "✓ Health check passed - API is responding"
+    HEALTH_RESPONSE=$(curl -s http://localhost:8765/health)
+    echo "  Response: $HEALTH_RESPONSE"
 else
-    warn "Health check failed (service may still be starting)"
+    warn "Health check failed (service may still be starting or port 8765 is not accessible)"
 fi
 
 ###########################################
 # Deployment Complete
 ###########################################
 echo ""
-info "================================================"
+echo "================================================"
 info "Artorize Processor Deployment Complete!"
-info "================================================"
+echo "================================================"
 echo ""
+
+info "System Information:"
+echo "  Python:  $(python3.12 --version)"
+echo "  Pip:     $(sudo -u $APP_USER $VENV_DIR/bin/pip --version)"
+echo "  User:    $APP_USER"
+echo ""
+
 info "Services:"
 echo "  Gateway: http://localhost:8765"
 echo "  Status:  systemctl status ${GATEWAY_SERVICE}"
 echo "  Logs:    journalctl -u ${GATEWAY_SERVICE} -f"
 echo ""
+
 info "File Locations:"
 echo "  App:     $APP_DIR"
 echo "  Config:  $APP_DIR/.env"
 echo "  Logs:    $LOG_DIR"
+echo "  Outputs: $APP_DIR/outputs"
+echo "  Jobs:    $APP_DIR/gateway_jobs"
 echo ""
+
 info "Service Management:"
 echo "  systemctl restart ${GATEWAY_SERVICE}"
 echo "  systemctl restart ${RUNNER_SERVICE}"
 echo "  journalctl -u ${GATEWAY_SERVICE} -f"
+echo "  journalctl -u ${RUNNER_SERVICE} -f"
 echo ""
-info "Test API: curl http://localhost:8765/health"
+
+info "Quick Commands:"
+echo "  Test API:     curl http://localhost:8765/health"
+echo "  View config:  cat $APP_DIR/.env"
+echo "  Watch logs:   tail -f $LOG_DIR/gateway.log"
+echo ""
+
+info "Installation Summary:"
+echo "  ✓ System dependencies installed"
+echo "  ✓ Python 3.12 configured"
+echo "  ✓ Virtual environment created"
+echo "  ✓ Python packages installed (see pip list output above)"
+echo "  ✓ Services enabled and started"
 echo ""

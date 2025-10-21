@@ -4,6 +4,7 @@
 # Core runtime
 aiofiles==24.1.0
 blockhash==0.1.1
+future==1.0.0
 c2pa-python==0.23.1
 crayons==0.4.0
 dhash==1.4
