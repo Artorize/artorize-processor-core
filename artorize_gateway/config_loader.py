@@ -21,7 +21,7 @@ def load_config_from_env() -> GatewayConfig:
         HOST: Server host (default: 0.0.0.0)
         PORT: Server port (default: 8765)
         PROCESSED_IMAGE_STORAGE: Storage type - "local", "s3", or "backend" (default: local)
-        STORAGE_BACKEND_URL: Backend API base URL for uploads (default: http://localhost:3000)
+        STORAGE_BACKEND_URL: Backend API base URL for uploads (default: http://localhost:5001)
         CDN_BASE_URL: CDN base URL (for S3/CDN storage)
         S3_BUCKET_NAME: S3 bucket name (for S3 storage)
         S3_REGION: AWS region (default: us-east-1)
@@ -58,7 +58,7 @@ def load_config_from_env() -> GatewayConfig:
         s3_bucket_name=os.getenv("S3_BUCKET_NAME", "artorizer-protected-images"),
         s3_region=os.getenv("S3_REGION", "us-east-1"),
         cdn_base_url=os.getenv("CDN_BASE_URL", "https://cdn.artorizer.com"),
-        local_storage_base_url=os.getenv("STORAGE_BACKEND_URL", "http://localhost:3000"),
+        local_storage_base_url=os.getenv("STORAGE_BACKEND_URL", "http://localhost:5001"),
     )
 
     return config
@@ -75,7 +75,7 @@ def get_storage_info() -> dict:
 
     return {
         "storage_type": os.getenv("PROCESSED_IMAGE_STORAGE", "local"),
-        "backend_url": os.getenv("STORAGE_BACKEND_URL", "http://localhost:3000"),
+        "backend_url": os.getenv("STORAGE_BACKEND_URL", "http://localhost:5001"),
         "cdn_url": os.getenv("CDN_BASE_URL", ""),
         "s3_bucket": os.getenv("S3_BUCKET_NAME", ""),
         "s3_region": os.getenv("S3_REGION", "us-east-1"),
