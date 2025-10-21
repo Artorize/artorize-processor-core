@@ -1,3 +1,11 @@
+"""
+DEPRECATED: TinEye processor removed due to pytineye dependency incompatibility with Python 3.12+
+
+The pytineye library requires future==0.18.2, which depends on the 'imp' module that was removed in Python 3.12.
+This processor is kept for reference but will always return unavailable.
+
+To re-enable: pip install pytineye (only works with Python 3.11 or earlier)
+"""
 from __future__ import annotations
 
 import os
@@ -9,21 +17,24 @@ from ..utils import load_image_bytes
 
 class TinEyeProcessor(BaseProcessor):
     name = "tineye"
-    description = "Optional: query TinEye API if TINEYE_API_KEY is set."
+    description = "DEPRECATED: TinEye API processor (pytineye incompatible with Python 3.12+)"
 
     def __init__(self, max_results: int = 10):
         self.max_results = max_results
 
     def available(self) -> bool:
-        api_key = os.getenv("TINEYE_API_KEY")
-        if not api_key:
-            return False
-        try:
-            import pytineye  # noqa: F401
-            from pytineye.api import TinEyeAPIRequest  # noqa: F401
-            return True
-        except Exception:
-            return False
+        # DEPRECATED: Always returns False due to pytineye Python 3.12+ incompatibility
+        return False
+        # Legacy code (commented out):
+        # api_key = os.getenv("TINEYE_API_KEY")
+        # if not api_key:
+        #     return False
+        # try:
+        #     import pytineye  # noqa: F401
+        #     from pytineye.api import TinEyeAPIRequest  # noqa: F401
+        #     return True
+        # except Exception:
+        #     return False
 
     def run(self, image_path: str, context: Dict[str, Any]) -> ProcessorResult:
         api_key = os.getenv("TINEYE_API_KEY")

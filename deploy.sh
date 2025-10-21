@@ -25,11 +25,12 @@ NC='\033[0m' # No Color
 
 # Configuration
 DEPLOY_MODE="${1:-production}"
-PYTHON_VERSION="3.11"
+PYTHON_VERSION="3.12"
 APP_USER="artorize"
 APP_DIR="/opt/artorize-processor"
 VENV_DIR="${APP_DIR}/venv"
-SERVICE_NAME="artorize-processor"
+GATEWAY_SERVICE="artorize-gateway"
+RUNNER_SERVICE="artorize-runner"
 GATEWAY_PORT="8765"
 LOG_DIR="/var/log/artorize"
 
@@ -108,50 +109,50 @@ apt-get install -y \
     libxmlsec1-dev
 
 ###########################################
-# 2. Python 3.11 Installation
+# 2. Python 3.12 Installation
 ###########################################
-echo_info "Checking Python 3.11 installation..."
+echo_info "Checking Python 3.12 installation..."
 
-if ! command -v python3.11 &> /dev/null; then
-    echo_info "Python 3.11 not found. Installing from deadsnakes PPA..."
+if ! command -v python3.12 &> /dev/null; then
+    echo_info "Python 3.12 not found. Installing from deadsnakes PPA..."
 
-    # Add deadsnakes PPA for Python 3.11
+    # Add deadsnakes PPA for Python 3.12
     apt-get install -y software-properties-common
     add-apt-repository -y ppa:deadsnakes/ppa || {
         echo_warn "PPA not available for Debian. Building from source..."
 
         cd /tmp
-        wget https://www.python.org/ftp/python/3.11.9/Python-3.11.9.tgz
-        tar -xf Python-3.11.9.tgz
-        cd Python-3.11.9
+        wget https://www.python.org/ftp/python/3.12.10/Python-3.12.10.tgz
+        tar -xf Python-3.12.10.tgz
+        cd Python-3.12.10
         ./configure --enable-optimizations
         make -j$(nproc)
         make altinstall
         cd /
-        rm -rf /tmp/Python-3.11.9*
+        rm -rf /tmp/Python-3.12.10*
     }
 
     apt-get update
-    apt-get install -y python3.11 python3.11-venv python3.11-dev || true
+    apt-get install -y python3.12 python3.12-venv python3.12-dev || true
 fi
 
-# Verify Python 3.11
-if ! python3.11 --version &> /dev/null; then
-    echo_error "Python 3.11 installation failed"
+# Verify Python 3.12
+if ! python3.12 --version &> /dev/null; then
+    echo_error "Python 3.12 installation failed"
     exit 1
 fi
 
-PYTHON_VERSION=$(python3.11 --version 2>&1 | awk '{print $2}')
+PYTHON_VERSION=$(python3.12 --version 2>&1 | awk '{print $2}')
 PYTHON_MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
 PYTHON_MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
 
-if [ "$PYTHON_MAJOR" != "3" ] || [ "$PYTHON_MINOR" != "11" ]; then
-    echo_error "Python 3.11.x is required for blockhash compatibility (Python 3.12+ breaks pytineye/future)"
+if [ "$PYTHON_MAJOR" != "3" ] || [ "$PYTHON_MINOR" != "12" ]; then
+    echo_error "Python 3.12.x is required for blockhash compatibility (Python 3.13+ is incompatible)"
     echo_error "Found: Python $PYTHON_VERSION"
     exit 1
 fi
 
-echo_info "Python 3.11 installed: $(python3.11 --version)"
+echo_info "Python 3.12 installed: $(python3.12 --version)"
 echo_info "✓ Python version check passed"
 
 ###########################################
@@ -204,7 +205,7 @@ if [ -d "$VENV_DIR" ]; then
     rm -rf $VENV_DIR
 fi
 
-sudo -u $APP_USER python3.11 -m venv $VENV_DIR
+sudo -u $APP_USER python3.12 -m venv $VENV_DIR
 
 echo_info "Installing Python dependencies..."
 sudo -u $APP_USER $VENV_DIR/bin/pip install --upgrade pip setuptools wheel
@@ -212,8 +213,8 @@ sudo -u $APP_USER $VENV_DIR/bin/pip install -r $APP_DIR/requirements.txt
 
 echo_info "Verifying blockhash compatibility..."
 if ! sudo -u $APP_USER $VENV_DIR/bin/python -c "import blockhash" 2>/dev/null; then
-    echo_error "blockhash import failed. Python 3.11 is required for compatibility."
-    echo_error "Python 3.12+ is incompatible due to removal of 'imp' module used by pytineye/future."
+    echo_error "blockhash import failed. Python 3.12 is required for compatibility."
+    echo_error "Note: pytineye has been removed from requirements (incompatible with Python 3.12+)."
     exit 1
 fi
 
@@ -281,12 +282,13 @@ else
 fi
 
 ###########################################
-# 7. Systemd Service (Production Mode)
+# 7. Systemd Services (Production Mode)
 ###########################################
 if [ "$DEPLOY_MODE" = "production" ] || [ "$DEPLOY_MODE" = "--production" ]; then
-    echo_info "Setting up systemd service..."
+    echo_info "Setting up systemd services..."
 
-    cat > "/etc/systemd/system/${SERVICE_NAME}.service" << EOF
+    # Gateway service
+    cat > "/etc/systemd/system/${GATEWAY_SERVICE}.service" << EOF
 [Unit]
 Description=Artorize Image Protection Gateway
 After=network.target
@@ -311,14 +313,55 @@ ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=$APP_DIR/outputs $APP_DIR/gateway_jobs $LOG_DIR
 
+# Resource limits
+LimitNOFILE=65536
+TasksMax=4096
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Runner service (for background processing)
+    cat > "/etc/systemd/system/${RUNNER_SERVICE}.service" << EOF
+[Unit]
+Description=Artorize Image Protection Pipeline Runner
+After=network.target
+
+[Service]
+Type=simple
+User=$APP_USER
+Group=$APP_USER
+WorkingDirectory=$APP_DIR
+Environment="PATH=$VENV_DIR/bin"
+EnvironmentFile=$APP_DIR/.env
+ExecStart=$VENV_DIR/bin/python -m artorize_runner.protection_pipeline_gpu
+Restart=always
+RestartSec=10
+StandardOutput=append:$LOG_DIR/runner.log
+StandardError=append:$LOG_DIR/runner-error.log
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=$APP_DIR/outputs $APP_DIR/input $APP_DIR/gateway_jobs $LOG_DIR
+
+# Resource limits
+LimitNOFILE=65536
+TasksMax=4096
+
 [Install]
 WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload
-    systemctl enable $SERVICE_NAME
+    systemctl enable $GATEWAY_SERVICE
+    systemctl enable $RUNNER_SERVICE
 
-    echo_info "Systemd service created: ${SERVICE_NAME}.service"
+    echo_info "Systemd services created:"
+    echo_info "  - ${GATEWAY_SERVICE}.service (HTTP API gateway)"
+    echo_info "  - ${RUNNER_SERVICE}.service (Background pipeline runner)"
 fi
 
 ###########################################
@@ -394,14 +437,30 @@ fi
 if [ "$DEPLOY_MODE" = "production" ] || [ "$DEPLOY_MODE" = "--production" ]; then
     echo_info "Starting services..."
 
-    systemctl restart $SERVICE_NAME
-    sleep 2
+    systemctl restart $GATEWAY_SERVICE
+    systemctl restart $RUNNER_SERVICE
+    sleep 3
 
-    if systemctl is-active --quiet $SERVICE_NAME; then
-        echo_info "Gateway service started successfully"
+    GATEWAY_STATUS="✓"
+    RUNNER_STATUS="✓"
+
+    if systemctl is-active --quiet $GATEWAY_SERVICE; then
+        echo_info "✓ Gateway service started successfully"
     else
-        echo_error "Gateway service failed to start. Check logs:"
-        echo "  journalctl -u ${SERVICE_NAME} -n 50"
+        echo_error "✗ Gateway service failed to start. Check logs:"
+        echo "  journalctl -u ${GATEWAY_SERVICE} -n 50"
+        GATEWAY_STATUS="✗"
+    fi
+
+    if systemctl is-active --quiet $RUNNER_SERVICE; then
+        echo_info "✓ Runner service started successfully"
+    else
+        echo_warn "✗ Runner service failed to start. Check logs:"
+        echo "  journalctl -u ${RUNNER_SERVICE} -n 50"
+        RUNNER_STATUS="✗"
+    fi
+
+    if [ "$GATEWAY_STATUS" = "✗" ]; then
         exit 1
     fi
 fi
@@ -443,7 +502,7 @@ if [ "$DEPLOY_MODE" = "production" ] || [ "$DEPLOY_MODE" = "--production" ]; the
         echo_info "✓ Health check passed!"
     else
         echo_warn "Health check failed. Service may still be starting..."
-        echo_warn "Check logs: journalctl -u ${SERVICE_NAME} -n 50"
+        echo_warn "Check logs: journalctl -u ${GATEWAY_SERVICE} -n 50"
     fi
 fi
 
@@ -462,19 +521,32 @@ echo ""
 
 if [ "$DEPLOY_MODE" = "production" ] || [ "$DEPLOY_MODE" = "--production" ]; then
     echo_info "Service Management:"
-    echo "  Start:   systemctl start ${SERVICE_NAME}"
-    echo "  Stop:    systemctl stop ${SERVICE_NAME}"
-    echo "  Restart: systemctl restart ${SERVICE_NAME}"
-    echo "  Status:  systemctl status ${SERVICE_NAME}"
-    echo "  Logs:    journalctl -u ${SERVICE_NAME} -f"
+    echo ""
+    echo "  Gateway Service:"
+    echo "    Start:   systemctl start ${GATEWAY_SERVICE}"
+    echo "    Stop:    systemctl stop ${GATEWAY_SERVICE}"
+    echo "    Restart: systemctl restart ${GATEWAY_SERVICE}"
+    echo "    Status:  systemctl status ${GATEWAY_SERVICE}"
+    echo "    Logs:    journalctl -u ${GATEWAY_SERVICE} -f"
+    echo ""
+    echo "  Runner Service:"
+    echo "    Start:   systemctl start ${RUNNER_SERVICE}"
+    echo "    Stop:    systemctl stop ${RUNNER_SERVICE}"
+    echo "    Restart: systemctl restart ${RUNNER_SERVICE}"
+    echo "    Status:  systemctl status ${RUNNER_SERVICE}"
+    echo "    Logs:    journalctl -u ${RUNNER_SERVICE} -f"
     echo ""
     echo_info "Gateway running at: http://localhost:$GATEWAY_PORT"
     echo_info "Access via Nginx: http://your-server-ip/"
+    echo_info "Runner: Processes images from input/ directory automatically"
 else
     echo_info "Development Mode - Manual Start:"
     echo "  cd $APP_DIR"
     echo "  source venv/bin/activate"
+    echo "  # Start gateway:"
     echo "  python -m artorize_gateway"
+    echo "  # Start runner (in another terminal):"
+    echo "  python -m artorize_runner.protection_pipeline_gpu"
 fi
 
 echo ""
@@ -496,9 +568,12 @@ if [ "$DEPLOY_MODE" = "production" ] || [ "$DEPLOY_MODE" = "--production" ]; the
     echo_info "Quick Reference:"
     echo ""
     echo "  Service Control:"
-    echo "    systemctl status ${SERVICE_NAME}    # Check service status"
-    echo "    systemctl restart ${SERVICE_NAME}   # Restart service"
-    echo "    journalctl -u ${SERVICE_NAME} -f    # Follow logs"
+    echo "    systemctl status ${GATEWAY_SERVICE}    # Check gateway status"
+    echo "    systemctl status ${RUNNER_SERVICE}     # Check runner status"
+    echo "    systemctl restart ${GATEWAY_SERVICE}   # Restart gateway"
+    echo "    systemctl restart ${RUNNER_SERVICE}    # Restart runner"
+    echo "    journalctl -u ${GATEWAY_SERVICE} -f    # Follow gateway logs"
+    echo "    journalctl -u ${RUNNER_SERVICE} -f     # Follow runner logs"
     echo ""
     echo "  Testing:"
     echo "    curl http://localhost:$GATEWAY_PORT/health"
@@ -508,5 +583,6 @@ if [ "$DEPLOY_MODE" = "production" ] || [ "$DEPLOY_MODE" = "--production" ]; the
     echo "    Logs:         $LOG_DIR"
     echo "    Config:       $APP_DIR/.env"
     echo "    Outputs:      $APP_DIR/outputs"
+    echo "    Input:        $APP_DIR/input  (monitored by runner)"
     echo ""
 fi
