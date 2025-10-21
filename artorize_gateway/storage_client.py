@@ -47,7 +47,7 @@ class StorageClient:
     HTTP client for backend storage service.
 
     Configuration via environment variables:
-    - STORAGE_BACKEND_URL: Backend service base URL (default: http://localhost:3000)
+    - STORAGE_BACKEND_URL: Backend service base URL (default: http://localhost:5001)
     - STORAGE_BACKEND_TIMEOUT: Request timeout in seconds (default: 30)
     """
 
@@ -56,7 +56,7 @@ class StorageClient:
         base_url: Optional[str] = None,
         timeout: float = 30.0
     ):
-        self.base_url = base_url or os.getenv("STORAGE_BACKEND_URL", "http://localhost:3000")
+        self.base_url = base_url or os.getenv("STORAGE_BACKEND_URL", "http://localhost:5001")
         self.timeout = timeout
         self._client: Optional[httpx.AsyncClient] = None
 
@@ -115,7 +115,7 @@ class StorageClient:
               Requires external backend storage service to be implemented.
         """
         # Check if backend is configured
-        if self.base_url == "http://localhost:3000":
+        if self.base_url == "http://localhost:5001":
             # Default value - backend not configured
             raise NotImplementedError(
                 "Backend storage service not configured. "
