@@ -172,6 +172,33 @@ fi
 ###########################################
 echo_info "Setting up application directory..."
 
+# Backup .env if it exists
+ENV_BACKUP=""
+if [ -f "$APP_DIR/.env" ]; then
+    ENV_BACKUP=$(mktemp)
+    cp "$APP_DIR/.env" "$ENV_BACKUP"
+    echo_info "Backed up existing .env configuration"
+fi
+
+# Clean application directory (except data directories)
+if [ -d "$APP_DIR" ]; then
+    echo_warn "Cleaning application directory (preserving outputs, jobs, input)..."
+    # Preserve data directories
+    [ -d "$APP_DIR/outputs" ] && mv "$APP_DIR/outputs" /tmp/artorize-outputs-backup 2>/dev/null || true
+    [ -d "$APP_DIR/gateway_jobs" ] && mv "$APP_DIR/gateway_jobs" /tmp/artorize-jobs-backup 2>/dev/null || true
+    [ -d "$APP_DIR/input" ] && mv "$APP_DIR/input" /tmp/artorize-input-backup 2>/dev/null || true
+
+    # Remove old installation
+    rm -rf $APP_DIR/*
+    rm -rf $APP_DIR/.*  2>/dev/null || true
+
+    # Restore data directories
+    [ -d /tmp/artorize-outputs-backup ] && mv /tmp/artorize-outputs-backup "$APP_DIR/outputs"
+    [ -d /tmp/artorize-jobs-backup ] && mv /tmp/artorize-jobs-backup "$APP_DIR/gateway_jobs"
+    [ -d /tmp/artorize-input-backup ] && mv /tmp/artorize-input-backup "$APP_DIR/input"
+fi
+
+# Create directory structure
 mkdir -p $APP_DIR
 mkdir -p $LOG_DIR
 mkdir -p $APP_DIR/input
@@ -182,14 +209,25 @@ mkdir -p $APP_DIR/gateway_jobs
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 echo_info "Copying files from $SCRIPT_DIR to $APP_DIR..."
 
-rsync -av --exclude='venv' \
-          --exclude='outputs' \
-          --exclude='gateway_jobs' \
-          --exclude='__pycache__' \
-          --exclude='*.pyc' \
-          --exclude='.git' \
-          --exclude='.DS_Store' \
-          "$SCRIPT_DIR/" "$APP_DIR/"
+rsync -a --exclude='venv' \
+         --exclude='outputs' \
+         --exclude='gateway_jobs' \
+         --exclude='input' \
+         --exclude='__pycache__' \
+         --exclude='*.pyc' \
+         --exclude='.git' \
+         --exclude='.gitignore' \
+         --exclude='.DS_Store' \
+         --exclude='.idea' \
+         --exclude='.claude' \
+         "$SCRIPT_DIR/" "$APP_DIR/"
+
+# Restore .env if it was backed up
+if [ -n "$ENV_BACKUP" ] && [ -f "$ENV_BACKUP" ]; then
+    cp "$ENV_BACKUP" "$APP_DIR/.env"
+    rm "$ENV_BACKUP"
+    echo_info "Restored existing .env configuration"
+fi
 
 # Set ownership
 chown -R $APP_USER:$APP_USER $APP_DIR
@@ -198,14 +236,40 @@ chown -R $APP_USER:$APP_USER $LOG_DIR
 ###########################################
 # 5. Virtual Environment Setup
 ###########################################
-echo_info "Creating Python virtual environment..."
+echo_info "Creating Python 3.12 virtual environment..."
 
+# Always recreate venv to ensure Python 3.12
 if [ -d "$VENV_DIR" ]; then
-    echo_warn "Virtual environment exists. Removing..."
+    echo_warn "Removing existing virtual environment..."
     rm -rf $VENV_DIR
 fi
 
+# Verify Python 3.12 is available
+if ! command -v python3.12 &> /dev/null; then
+    echo_error "Python 3.12 not found. Installation may have failed."
+    exit 1
+fi
+
+# Create venv with explicit Python 3.12
 sudo -u $APP_USER python3.12 -m venv $VENV_DIR
+
+# Verify venv is using Python 3.12
+VENV_PYTHON_VERSION=$($VENV_DIR/bin/python --version 2>&1)
+echo_info "Virtual environment created with: $VENV_PYTHON_VERSION"
+
+if ! echo "$VENV_PYTHON_VERSION" | grep -q "3.12"; then
+    echo_error "Virtual environment is not using Python 3.12!"
+    echo_error "Found: $VENV_PYTHON_VERSION"
+    exit 1
+fi
+
+# Verify requirements.txt exists
+if [ ! -f "$APP_DIR/requirements.txt" ]; then
+    echo_error "requirements.txt not found at $APP_DIR/requirements.txt"
+    echo_error "File copy may have failed. Contents of $APP_DIR:"
+    ls -la "$APP_DIR"
+    exit 1
+fi
 
 echo_info "Installing Python dependencies..."
 sudo -u $APP_USER $VENV_DIR/bin/pip install --upgrade pip setuptools wheel
@@ -217,6 +281,8 @@ if ! sudo -u $APP_USER $VENV_DIR/bin/python -c "import blockhash" 2>/dev/null; t
     echo_error "Note: pytineye has been removed from requirements (incompatible with Python 3.12+)."
     exit 1
 fi
+
+echo_info "✓ Virtual environment verified with Python 3.12 and all dependencies installed"
 
 ###########################################
 # 6. Configuration Files
