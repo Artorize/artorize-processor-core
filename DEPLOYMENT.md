@@ -21,7 +21,7 @@ This guide provides instructions for deploying the Artorize image protection pro
 ### System Requirements
 
 - **Operating System**: Debian 12 (Bookworm)
-- **Python**: 3.12.x (required for `blockhash` compatibility)
+- **Python**: 3.11.x (required for `blockhash` dependency compatibility - Python 3.12+ is incompatible)
 - **RAM**: Minimum 4GB, 8GB+ recommended
 - **CPU**: 2+ cores recommended
 - **Storage**: 20GB+ available space
@@ -75,9 +75,18 @@ If you prefer manual deployment or need to customize the process:
 sudo apt-get update
 sudo apt-get install -y \
     build-essential git curl wget nginx \
-    python3.12 python3.12-venv python3.12-dev \
+    python3.11 python3.11-venv python3.11-dev \
     libjpeg-dev libpng-dev libtiff-dev \
     libavcodec-dev libavformat-dev libswscale-dev
+
+# If Python 3.11 is not available in repos, build from source:
+cd /tmp
+wget https://www.python.org/ftp/python/3.11.9/Python-3.11.9.tgz
+tar -xf Python-3.11.9.tgz
+cd Python-3.11.9
+./configure --enable-optimizations
+make -j$(nproc)
+make altinstall
 ```
 
 ### 2. Create Application User
@@ -102,7 +111,7 @@ sudo chown -R artorize:artorize /var/log/artorize
 
 ```bash
 cd /opt/artorize-processor
-sudo -u artorize python3.12 -m venv venv
+sudo -u artorize python3.11 -m venv venv
 sudo -u artorize venv/bin/pip install --upgrade pip
 sudo -u artorize venv/bin/pip install -r requirements.txt
 ```
@@ -351,7 +360,7 @@ sudo journalctl -u artorize-gateway -n 50
 
 # Verify Python version
 /opt/artorize-processor/venv/bin/python --version
-# Should be 3.12.x
+# Should be 3.11.x
 
 # Test manual start
 sudo -u artorize /opt/artorize-processor/venv/bin/python -m artorize_gateway
@@ -385,8 +394,12 @@ sudo chmod -R 755 /opt/artorize-processor/outputs
 ### Blockhash Import Errors
 
 ```bash
-# Verify Python version (must be 3.12.x)
+# Verify Python version (must be 3.11.x, NOT 3.12+)
 /opt/artorize-processor/venv/bin/python --version
+
+# If using Python 3.12+, you'll get "ModuleNotFoundError: No module named 'imp'"
+# This is because pytineye requires future==0.18.2 which uses the imp module (removed in 3.12)
+# Solution: Use Python 3.11
 
 # Reinstall blockhash
 sudo -u artorize /opt/artorize-processor/venv/bin/pip install --force-reinstall blockhash
