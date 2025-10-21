@@ -843,4 +843,102 @@ def create_app(config: Optional[GatewayConfig] = None) -> FastAPI:
             pass
         return JSONResponse({"job_id": job_id, "status": "deleted"})
 
+    @app.get("/health")
+    async def health_check(state: GatewayState = Depends(get_state)) -> JSONResponse:
+        """
+        Comprehensive health check endpoint.
+
+        Returns status of:
+        - Gateway service (API server)
+        - Storage backend (similarity search service)
+        - Backend upload service (artwork storage service)
+        - Job queue status
+        - Worker status
+        """
+        from .storage_client import get_storage_client
+
+        # Gateway is healthy if we can respond
+        gateway_status = "healthy"
+
+        # Check storage backend (similarity search)
+        storage_backend_status = "unknown"
+        storage_backend_url = None
+        try:
+            storage_client = get_storage_client()
+            storage_backend_url = storage_client.base_url
+            is_healthy = await storage_client.health_check()
+            storage_backend_status = "healthy" if is_healthy else "unhealthy"
+        except Exception as e:
+            storage_backend_status = f"error: {str(e)}"
+
+        # Check backend upload service (artwork storage)
+        backend_upload_status = "not_configured"
+        backend_upload_url = None
+        if state.config.backend_url:
+            backend_upload_url = state.config.backend_url
+            try:
+                is_healthy = await state.backend_upload_client.health_check(state.config.backend_url)
+                backend_upload_status = "healthy" if is_healthy else "unhealthy"
+            except Exception as e:
+                backend_upload_status = f"error: {str(e)}"
+
+        # Job queue status
+        queue_size = state.queue.qsize()
+        total_jobs = len(state.jobs)
+        running_jobs = sum(1 for job in state.jobs.values() if job.status == STATUS_RUNNING)
+        queued_jobs = sum(1 for job in state.jobs.values() if job.status == STATUS_QUEUED)
+        completed_jobs = sum(1 for job in state.jobs.values() if job.status == STATUS_DONE)
+        failed_jobs = sum(1 for job in state.jobs.values() if job.status == STATUS_ERROR)
+
+        # Worker status
+        workers_count = len(state.workers)
+        workers_alive = sum(1 for worker in state.workers if not worker.done())
+
+        # Overall health status
+        overall_status = "healthy"
+        if storage_backend_status == "unhealthy" or backend_upload_status == "unhealthy":
+            overall_status = "degraded"
+        if gateway_status != "healthy":
+            overall_status = "unhealthy"
+
+        response = {
+            "status": overall_status,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "components": {
+                "gateway": {
+                    "status": gateway_status,
+                    "version": "0.1.0",
+                },
+                "storage_backend": {
+                    "status": storage_backend_status,
+                    "url": storage_backend_url,
+                    "description": "Similarity search and artwork database service",
+                },
+                "backend_upload": {
+                    "status": backend_upload_status,
+                    "url": backend_upload_url,
+                    "description": "Artwork storage and management service",
+                },
+                "queue": {
+                    "status": "healthy" if workers_alive > 0 else "unhealthy",
+                    "size": queue_size,
+                    "total_jobs": total_jobs,
+                    "running": running_jobs,
+                    "queued": queued_jobs,
+                    "completed": completed_jobs,
+                    "failed": failed_jobs,
+                },
+                "workers": {
+                    "status": "healthy" if workers_alive > 0 else "unhealthy",
+                    "total": workers_count,
+                    "alive": workers_alive,
+                    "configured_concurrency": state.config.worker_concurrency,
+                },
+            },
+        }
+
+        # Return 200 for healthy/degraded, 503 for unhealthy
+        status_code = 200 if overall_status in ["healthy", "degraded"] else 503
+        return JSONResponse(content=response, status_code=status_code)
+
     return app
