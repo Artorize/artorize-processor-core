@@ -21,7 +21,8 @@
       "Bash(curl:*)",
       "Bash(del TODO.md mod-processor.md)",
       "Bash(Remove-Item Env:PYTHONPATH)",
-      "Bash(del test_exif_serialization.py)"
+      "Bash(del test_exif_serialization.py)",
+      "Bash(chmod:*)"
     ],
     "deny": [],
     "ask": []

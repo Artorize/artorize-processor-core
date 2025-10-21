@@ -32,6 +32,7 @@ from .image_storage import StorageUploader
 from .backend_upload import BackendUploadClient, BackendAuthError
 
 
+
 STATUS_QUEUED = "queued"
 STATUS_RUNNING = "running"
 STATUS_DONE = "done"
