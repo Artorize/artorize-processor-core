@@ -22,7 +22,7 @@ This will automatically:
 - Create a dedicated `artorize` system user
 - Set up virtual environment and install all dependencies
 - Create two systemd services:
-  - **`artorize-processor-gateway`** - FastAPI server with internal job queue (port 8765)
+  - **`artorize-processor-gateway`** - FastAPI server with internal job queue (port 5001)
   - **`artorize-processor-runner`** - Optional batch processing service
 - Start both services automatically
 
@@ -78,7 +78,7 @@ py -3.12 -m artorize_runner.protection_pipeline_gpu
 # Single image analysis
 py -3.12 -m artorize_runner.cli path\to\image.jpg --json-out report.json
 
-# Start HTTP API server (listens on 127.0.0.1:8765)
+# Start HTTP API server (listens on 127.0.0.1:5001)
 py -3.12 -m artorize_gateway
 ```
 
@@ -144,7 +144,7 @@ ARTORIZE_RUNNER_WORKFLOW__WATERMARK_STRATEGY=tree-ring
 ### Default Configuration
 
 - **Host**: `127.0.0.1` (localhost only)
-- **Port**: `8765`
+- **Port**: `5001`
 
 The gateway server listens on `127.0.0.1` by default for security reasons, making it accessible only from the local machine. This prevents unauthorized external access.
 
@@ -165,7 +165,7 @@ server {
     # ssl_certificate_key /path/to/key.pem;
 
     location / {
-        proxy_pass http://127.0.0.1:8765;
+        proxy_pass http://127.0.0.1:5001;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

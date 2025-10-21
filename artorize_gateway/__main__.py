@@ -26,7 +26,7 @@ def check_python_version() -> None:
 def main() -> None:
     check_python_version()
     config = GatewayConfig()
-    uvicorn.run(create_app(config), host="127.0.0.1", port=8765)
+    uvicorn.run(create_app(config), host="127.0.0.1", port=5001)
 
 
 if __name__ == "__main__":

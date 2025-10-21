@@ -180,11 +180,11 @@ info "Upgrading pip, setuptools, and wheel..."
 sudo -u $APP_USER $VENV_DIR/bin/pip install --upgrade pip setuptools wheel
 
 info "Installing packages from requirements.txt..."
-info "This will show all downloaded packages and their versions..."
+info "This may take a few minutes..."
 echo ""
-sudo -u $APP_USER $VENV_DIR/bin/pip install -v -r $APP_DIR/requirements.txt
+sudo -u $APP_USER $VENV_DIR/bin/pip install -r $APP_DIR/requirements.txt
 echo ""
-info "Package installation complete"
+info "✓ Package installation complete"
 
 # Verify critical imports
 info "Verifying critical dependencies..."
@@ -220,6 +220,8 @@ if [ ! -f "$APP_DIR/.env" ]; then
     info "Creating default .env configuration..."
     cat > "$APP_DIR/.env" << 'EOF'
 # Artorize Processor Configuration
+# Gateway runs on 127.0.0.1:5001 by default
+
 # Protection Pipeline Settings
 ARTORIZE_RUNNER__enable_fawkes=true
 ARTORIZE_RUNNER__enable_photoguard=true
@@ -228,21 +230,14 @@ ARTORIZE_RUNNER__enable_nightshade=true
 ARTORIZE_RUNNER__watermark_strategy=invisible-watermark
 ARTORIZE_RUNNER__enable_c2pa_manifest=true
 ARTORIZE_RUNNER__enable_poison_mask=true
+ARTORIZE_RUNNER__max_stage_dim=512
 
-# Gateway Configuration
-GATEWAY_PORT=8765
-GATEWAY_HOST=0.0.0.0
-GATEWAY_WORKERS=4
+# Storage Backend (for uploading processed images)
+STORAGE_BACKEND_URL=http://localhost:5001
+PROCESSED_IMAGE_STORAGE=local
 
-# Storage (local/s3/cdn)
-STORAGE_TYPE=local
-
-# Performance
-MAX_CONCURRENT_JOBS=4
-GPU_ENABLED=false
-
-# Logging
-LOG_LEVEL=INFO
+# Worker Settings
+WORKER_CONCURRENCY=1
 EOF
     chown $APP_USER:$APP_USER "$APP_DIR/.env"
 fi
@@ -373,12 +368,12 @@ fi
 echo ""
 info "Running API health check..."
 sleep 2
-if curl -f http://localhost:8765/health &> /dev/null; then
+if curl -f http://localhost:5001/health &> /dev/null; then
     info "✓ Health check passed - API is responding"
-    HEALTH_RESPONSE=$(curl -s http://localhost:8765/health)
+    HEALTH_RESPONSE=$(curl -s http://localhost:5001/health)
     echo "  Response: $HEALTH_RESPONSE"
 else
-    warn "Health check failed (service may still be starting or port 8765 is not accessible)"
+    warn "Health check failed (service may still be starting or port 5001 is not accessible)"
 fi
 
 ###########################################
@@ -397,7 +392,7 @@ echo "  User:    $APP_USER"
 echo ""
 
 info "Services:"
-echo "  Gateway: http://localhost:8765"
+echo "  Gateway: http://localhost:5001"
 echo "  Status:  systemctl status ${GATEWAY_SERVICE}"
 echo "  Logs:    journalctl -u ${GATEWAY_SERVICE} -f"
 echo ""
@@ -418,7 +413,7 @@ echo "  journalctl -u ${RUNNER_SERVICE} -f"
 echo ""
 
 info "Quick Commands:"
-echo "  Test API:     curl http://localhost:8765/health"
+echo "  Test API:     curl http://localhost:5001/health"
 echo "  View config:  cat $APP_DIR/.env"
 echo "  Watch logs:   tail -f $LOG_DIR/gateway.log"
 echo ""

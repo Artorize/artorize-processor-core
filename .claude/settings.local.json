@@ -22,7 +22,10 @@
       "Bash(del TODO.md mod-processor.md)",
       "Bash(Remove-Item Env:PYTHONPATH)",
       "Bash(del test_exif_serialization.py)",
-      "Bash(chmod:*)"
+      "Bash(chmod:*)",
+      "Bash(pip index:*)",
+      "Bash(python3 -m pip:*)",
+      "WebFetch(domain:pypi.org)"
     ],
     "deny": [],
     "ask": []
