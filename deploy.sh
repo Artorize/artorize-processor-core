@@ -220,7 +220,8 @@ if [ ! -f "$APP_DIR/.env" ]; then
     info "Creating default .env configuration..."
     cat > "$APP_DIR/.env" << 'EOF'
 # Artorize Processor Configuration
-# Gateway runs on 127.0.0.1:5001 by default
+# Gateway runs on 127.0.0.1:8765 by default
+# Backend API runs on port 5001
 
 # Protection Pipeline Settings
 ARTORIZE_RUNNER__enable_fawkes=true
@@ -232,7 +233,7 @@ ARTORIZE_RUNNER__enable_c2pa_manifest=true
 ARTORIZE_RUNNER__enable_poison_mask=true
 ARTORIZE_RUNNER__max_stage_dim=512
 
-# Storage Backend (for uploading processed images)
+# Storage Backend (for uploading processed images to backend API)
 STORAGE_BACKEND_URL=http://localhost:5001
 PROCESSED_IMAGE_STORAGE=local
 
@@ -368,12 +369,12 @@ fi
 echo ""
 info "Running API health check..."
 sleep 2
-if curl -f http://localhost:5001/health &> /dev/null; then
+if curl -f http://localhost:8765/health &> /dev/null; then
     info "✓ Health check passed - API is responding"
-    HEALTH_RESPONSE=$(curl -s http://localhost:5001/health)
+    HEALTH_RESPONSE=$(curl -s http://localhost:8765/health)
     echo "  Response: $HEALTH_RESPONSE"
 else
-    warn "Health check failed (service may still be starting or port 5001 is not accessible)"
+    warn "Health check failed (service may still be starting or port 8765 is not accessible)"
 fi
 
 ###########################################
@@ -392,7 +393,7 @@ echo "  User:    $APP_USER"
 echo ""
 
 info "Services:"
-echo "  Gateway: http://localhost:5001"
+echo "  Gateway: http://localhost:8765"
 echo "  Status:  systemctl status ${GATEWAY_SERVICE}"
 echo "  Logs:    journalctl -u ${GATEWAY_SERVICE} -f"
 echo ""
@@ -413,7 +414,7 @@ echo "  journalctl -u ${RUNNER_SERVICE} -f"
 echo ""
 
 info "Quick Commands:"
-echo "  Test API:     curl http://localhost:5001/health"
+echo "  Test API:     curl http://localhost:8765/health"
 echo "  View config:  cat $APP_DIR/.env"
 echo "  Watch logs:   tail -f $LOG_DIR/gateway.log"
 echo ""
