@@ -21,11 +21,13 @@ This guide provides instructions for deploying the Artorize image protection pro
 ### System Requirements
 
 - **Operating System**: Debian 12 (Bookworm)
-- **Python**: 3.11.x (required for `blockhash` dependency compatibility - Python 3.12+ is incompatible)
+- **Python**: 3.12.x (required - Python 3.13+ is incompatible with `blockhash`)
 - **RAM**: Minimum 4GB, 8GB+ recommended
 - **CPU**: 2+ cores recommended
 - **Storage**: 20GB+ available space
 - **Network**: Public IP for production deployments
+
+**Note**: TinEye API has been deprecated due to `pytineye` Python 3.12+ incompatibility.
 
 ### Optional
 
@@ -59,9 +61,11 @@ sudo ./deploy.sh --development
 3. Sets up application directory at `/opt/artorize-processor`
 4. Creates Python 3.12 virtual environment
 5. Installs Python dependencies
-6. Configures systemd service
+6. Configures **two systemd services**:
+   - `artorize-gateway` - HTTP API server (port 8765)
+   - `artorize-runner` - Background pipeline processor
 7. Sets up nginx reverse proxy
-8. Starts services
+8. Starts both services
 
 ---
 
@@ -75,15 +79,15 @@ If you prefer manual deployment or need to customize the process:
 sudo apt-get update
 sudo apt-get install -y \
     build-essential git curl wget nginx \
-    python3.11 python3.11-venv python3.11-dev \
+    python3.12 python3.12-venv python3.12-dev \
     libjpeg-dev libpng-dev libtiff-dev \
     libavcodec-dev libavformat-dev libswscale-dev
 
-# If Python 3.11 is not available in repos, build from source:
+# If Python 3.12 is not available in repos, build from source:
 cd /tmp
-wget https://www.python.org/ftp/python/3.11.9/Python-3.11.9.tgz
-tar -xf Python-3.11.9.tgz
-cd Python-3.11.9
+wget https://www.python.org/ftp/python/3.12.10/Python-3.12.10.tgz
+tar -xf Python-3.12.10.tgz
+cd Python-3.12.10
 ./configure --enable-optimizations
 make -j$(nproc)
 make altinstall
@@ -111,7 +115,7 @@ sudo chown -R artorize:artorize /var/log/artorize
 
 ```bash
 cd /opt/artorize-processor
-sudo -u artorize python3.11 -m venv venv
+sudo -u artorize python3.12 -m venv venv
 sudo -u artorize venv/bin/pip install --upgrade pip
 sudo -u artorize venv/bin/pip install -r requirements.txt
 ```
@@ -124,13 +128,19 @@ sudo nano .env  # Edit configuration
 sudo chown artorize:artorize .env
 ```
 
-### 6. Setup Systemd Service
+### 6. Setup Systemd Services
 
 ```bash
+# Install both service files
 sudo cp artorize-gateway.service /etc/systemd/system/
+sudo cp artorize-runner.service /etc/systemd/system/
 sudo systemctl daemon-reload
+
+# Enable and start both services
 sudo systemctl enable artorize-gateway
+sudo systemctl enable artorize-runner
 sudo systemctl start artorize-gateway
+sudo systemctl start artorize-runner
 ```
 
 ### 7. Configure Nginx
@@ -205,6 +215,7 @@ CDN_API_KEY=your-api-key
 
 ### Systemd Commands
 
+**Gateway Service (HTTP API):**
 ```bash
 # Start service
 sudo systemctl start artorize-gateway
@@ -223,6 +234,36 @@ sudo journalctl -u artorize-gateway -f
 
 # Enable auto-start on boot
 sudo systemctl enable artorize-gateway
+```
+
+**Runner Service (Background Processor):**
+```bash
+# Start service
+sudo systemctl start artorize-runner
+
+# Stop service
+sudo systemctl stop artorize-runner
+
+# Restart service
+sudo systemctl restart artorize-runner
+
+# Check status
+sudo systemctl status artorize-runner
+
+# View logs
+sudo journalctl -u artorize-runner -f
+
+# Enable auto-start on boot
+sudo systemctl enable artorize-runner
+```
+
+**Both Services:**
+```bash
+# Restart both
+sudo systemctl restart artorize-gateway artorize-runner
+
+# Check status of both
+sudo systemctl status artorize-gateway artorize-runner
 ```
 
 ### Health Check
@@ -303,12 +344,18 @@ server {
 ```bash
 # Gateway logs
 tail -f /var/log/artorize/gateway.log
-
-# Error logs
 tail -f /var/log/artorize/gateway-error.log
 
-# Systemd journal
+# Runner logs
+tail -f /var/log/artorize/runner.log
+tail -f /var/log/artorize/runner-error.log
+
+# Systemd journals
 sudo journalctl -u artorize-gateway -n 100 --no-pager
+sudo journalctl -u artorize-runner -n 100 --no-pager
+
+# Follow both services
+sudo journalctl -u artorize-gateway -u artorize-runner -f
 ```
 
 ### Log Rotation
@@ -354,16 +401,19 @@ du -sh /opt/artorize-processor/outputs
 ```bash
 # Check service status
 sudo systemctl status artorize-gateway
+sudo systemctl status artorize-runner
 
 # Check logs
 sudo journalctl -u artorize-gateway -n 50
+sudo journalctl -u artorize-runner -n 50
 
 # Verify Python version
 /opt/artorize-processor/venv/bin/python --version
-# Should be 3.11.x
+# Should be 3.12.x
 
 # Test manual start
 sudo -u artorize /opt/artorize-processor/venv/bin/python -m artorize_gateway
+sudo -u artorize /opt/artorize-processor/venv/bin/python -m artorize_runner.protection_pipeline_gpu
 ```
 
 ### Port Already in Use
@@ -394,12 +444,8 @@ sudo chmod -R 755 /opt/artorize-processor/outputs
 ### Blockhash Import Errors
 
 ```bash
-# Verify Python version (must be 3.11.x, NOT 3.12+)
+# Verify Python version (must be 3.12.x)
 /opt/artorize-processor/venv/bin/python --version
-
-# If using Python 3.12+, you'll get "ModuleNotFoundError: No module named 'imp'"
-# This is because pytineye requires future==0.18.2 which uses the imp module (removed in 3.12)
-# Solution: Use Python 3.11
 
 # Reinstall blockhash
 sudo -u artorize /opt/artorize-processor/venv/bin/pip install --force-reinstall blockhash
@@ -426,8 +472,8 @@ sudo systemctl restart artorize-gateway
 ### Update Application Code
 
 ```bash
-# Stop service
-sudo systemctl stop artorize-gateway
+# Stop services
+sudo systemctl stop artorize-gateway artorize-runner
 
 # Backup current version
 sudo cp -r /opt/artorize-processor /opt/artorize-processor.backup
@@ -439,11 +485,12 @@ sudo -u artorize git pull
 # Update dependencies
 sudo -u artorize venv/bin/pip install -r requirements.txt --upgrade
 
-# Restart service
-sudo systemctl start artorize-gateway
+# Restart services
+sudo systemctl start artorize-gateway artorize-runner
 
 # Verify
 curl http://localhost:8765/health
+sudo systemctl status artorize-gateway artorize-runner
 ```
 
 ### Database Migrations (if applicable)
@@ -457,15 +504,15 @@ source venv/bin/activate
 ### Rollback to Previous Version
 
 ```bash
-# Stop service
-sudo systemctl stop artorize-gateway
+# Stop services
+sudo systemctl stop artorize-gateway artorize-runner
 
 # Restore backup
 sudo rm -rf /opt/artorize-processor
 sudo mv /opt/artorize-processor.backup /opt/artorize-processor
 
-# Restart service
-sudo systemctl start artorize-gateway
+# Restart services
+sudo systemctl start artorize-gateway artorize-runner
 ```
 
 ### Clean Old Outputs
