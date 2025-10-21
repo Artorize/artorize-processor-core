@@ -9,6 +9,42 @@ Image protection pipeline that applies multiple adversarial perturbations (Fawke
 > **Note**: This project requires Python 3.12.10 or compatible 3.12.x versions. The `blockhash` library is not compatible with Python 3.13+.
 > PyTorch does not yet publish wheels for Python 3.13, so GPU acceleration will only install on Python 3.12 builds.
 
+## Production Deployment (Debian/Ubuntu)
+
+**One-liner Auto-Deploy:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/Artorize/artorize-processor-core/main/deploy.sh | sudo bash -s -- --production
+```
+
+This will automatically:
+- Install Python 3.12 and system dependencies
+- Clone the repository to `/opt/artorize-processor`
+- Create a dedicated `artorize` system user
+- Set up a systemd service named `artorize-processor`
+- Configure Nginx reverse proxy
+- Start the gateway API on port 8765
+
+**Manual Deployment:**
+```bash
+# Clone the repository
+git clone https://github.com/Artorize/artorize-processor-core.git
+cd artorize-processor-core
+
+# Run deployment script
+sudo ./deploy.sh --production
+
+# Check service status
+sudo systemctl status artorize-processor
+```
+
+**Service Management:**
+```bash
+sudo systemctl start artorize-processor    # Start service
+sudo systemctl stop artorize-processor     # Stop service
+sudo systemctl restart artorize-processor  # Restart service
+sudo journalctl -u artorize-processor -f   # View logs
+```
+
 ## Quick Start
 
 ### Installation

@@ -54,6 +54,26 @@ class BackendUploadClient:
         self.max_retries = max_retries
         self.retry_delay = retry_delay
 
+    async def health_check(self, backend_url: str) -> bool:
+        """
+        Check if backend upload service is available.
+
+        Args:
+            backend_url: Base URL of backend API
+
+        Returns:
+            True if service responds, False otherwise
+        """
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f'{backend_url}/health',
+                    timeout=5.0,  # Short timeout for health checks
+                )
+                return response.status_code == 200
+        except Exception:
+            return False
+
     async def upload_artwork(
         self,
         backend_url: str,
