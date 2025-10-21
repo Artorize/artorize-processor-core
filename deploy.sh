@@ -1,73 +1,43 @@
 #!/bin/bash
-
 ###########################################
-# Artorize Processor - Debian 12 Auto-Deployment Script
+# Artorize Processor - Production Deployment
+# Debian 12 / Ubuntu 22.04+ Compatible
 #
-# This script automates the deployment of the Artorize image protection
-# processor and gateway on Debian 12 servers.
-#
-# Usage:
-#   sudo ./deploy.sh [--production|--development]
-#
-# Options:
-#   --production   Deploy for production (systemd service, nginx)
-#   --development  Deploy for development (no systemd, manual start)
+# Usage: curl -fsSL https://raw.githubusercontent.com/Artorize/artorize-processor-core/main/deploy.sh | sudo bash
 ###########################################
 
 set -e  # Exit on error
 set -u  # Exit on undefined variable
 
-# Color output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-
 # Configuration
-DEPLOY_MODE="${1:-production}"
 PYTHON_VERSION="3.12"
+REPO_URL="https://github.com/Artorize/artorize-processor-core.git"
 APP_USER="artorize"
 APP_DIR="/opt/artorize-processor"
 VENV_DIR="${APP_DIR}/venv"
-GATEWAY_SERVICE="artorize-gateway"
-RUNNER_SERVICE="artorize-runner"
-GATEWAY_PORT="8765"
 LOG_DIR="/var/log/artorize"
+GATEWAY_SERVICE="artorize-processor-gateway"
+RUNNER_SERVICE="artorize-processor-runner"
 
-echo_info() {
-    echo -e "${GREEN}[INFO]${NC} $1"
-}
+# Color output
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
 
-echo_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
-}
+info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
-echo_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
+# Check root
+[[ $EUID -ne 0 ]] && error "This script must be run as root (use sudo)"
 
-# Check if running as root
-if [[ $EUID -ne 0 ]]; then
-   echo_error "This script must be run as root (use sudo)"
-   exit 1
-fi
-
-# Verify Debian 12
-if ! grep -q "Debian GNU/Linux 12" /etc/os-release 2>/dev/null; then
-    echo_warn "This script is designed for Debian 12. Your system may not be compatible."
-    read -p "Continue anyway? (y/N): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        exit 1
-    fi
-fi
-
-echo_info "Starting Artorize Processor deployment in ${DEPLOY_MODE} mode..."
+info "Starting Artorize Processor deployment..."
 
 ###########################################
 # 1. System Dependencies
 ###########################################
-echo_info "Installing system dependencies..."
+info "Installing system dependencies..."
 
 apt-get update
 apt-get install -y \
@@ -76,222 +46,136 @@ apt-get install -y \
     git \
     curl \
     wget \
-    nginx \
-    supervisor \
-    rsync \
     libjpeg-dev \
     libpng-dev \
     libtiff-dev \
-    libavcodec-dev \
-    libavformat-dev \
-    libswscale-dev \
-    libv4l-dev \
-    libxvidcore-dev \
-    libx264-dev \
-    libatlas-base-dev \
-    libopenblas-dev \
-    liblapack-dev \
-    gfortran \
     python3-dev \
     python3-pip \
     python3-venv \
     libffi-dev \
-    libssl-dev \
-    zlib1g-dev \
-    libbz2-dev \
-    libreadline-dev \
-    libsqlite3-dev \
-    libncurses5-dev \
-    libncursesw5-dev \
-    xz-utils \
-    tk-dev \
-    libxml2-dev \
-    libxmlsec1-dev
+    libssl-dev
 
 ###########################################
 # 2. Python 3.12 Installation
 ###########################################
-echo_info "Checking Python 3.12 installation..."
+info "Checking Python 3.12 installation..."
 
 if ! command -v python3.12 &> /dev/null; then
-    echo_info "Python 3.12 not found. Installing from deadsnakes PPA..."
+    info "Python 3.12 not found. Installing..."
 
-    # Add deadsnakes PPA for Python 3.12
-    apt-get install -y software-properties-common
-    add-apt-repository -y ppa:deadsnakes/ppa || {
-        echo_warn "PPA not available for Debian. Building from source..."
-
+    # Try deadsnakes PPA first (Ubuntu)
+    if grep -q "Ubuntu" /etc/os-release 2>/dev/null; then
+        add-apt-repository -y ppa:deadsnakes/ppa
+        apt-get update
+        apt-get install -y python3.12 python3.12-venv python3.12-dev
+    else
+        # Build from source (Debian)
+        info "Building Python 3.12 from source..."
         cd /tmp
-        wget https://www.python.org/ftp/python/3.12.10/Python-3.12.10.tgz
+        wget -q https://www.python.org/ftp/python/3.12.10/Python-3.12.10.tgz
         tar -xf Python-3.12.10.tgz
         cd Python-3.12.10
-        ./configure --enable-optimizations
-        make -j$(nproc)
-        make altinstall
-        cd /
-        rm -rf /tmp/Python-3.12.10*
-    }
-
-    apt-get update
-    apt-get install -y python3.12 python3.12-venv python3.12-dev || true
+        ./configure --enable-optimizations --quiet
+        make -j$(nproc) --quiet
+        make altinstall --quiet
+        cd / && rm -rf /tmp/Python-3.12.10*
+    fi
 fi
 
 # Verify Python 3.12
-if ! python3.12 --version &> /dev/null; then
-    echo_error "Python 3.12 installation failed"
-    exit 1
-fi
+python3.12 --version &> /dev/null || error "Python 3.12 installation failed"
+PY_VER=$(python3.12 --version | awk '{print $2}' | cut -d. -f1,2)
+[[ "$PY_VER" != "3.12" ]] && error "Python 3.12.x required (found: $PY_VER)"
 
-PYTHON_VERSION=$(python3.12 --version 2>&1 | awk '{print $2}')
-PYTHON_MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
-PYTHON_MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
-
-if [ "$PYTHON_MAJOR" != "3" ] || [ "$PYTHON_MINOR" != "12" ]; then
-    echo_error "Python 3.12.x is required for blockhash compatibility (Python 3.13+ is incompatible)"
-    echo_error "Found: Python $PYTHON_VERSION"
-    exit 1
-fi
-
-echo_info "Python 3.12 installed: $(python3.12 --version)"
-echo_info "✓ Python version check passed"
+info "Python 3.12 installed: $(python3.12 --version)"
 
 ###########################################
-# 3. Application User Setup
+# 3. Application User
 ###########################################
-echo_info "Setting up application user..."
+info "Setting up application user..."
 
 if ! id -u $APP_USER &> /dev/null; then
     useradd -r -m -d /home/$APP_USER -s /bin/bash $APP_USER
-    echo_info "Created user: $APP_USER"
+    info "Created user: $APP_USER"
 else
-    echo_info "User $APP_USER already exists"
+    info "User $APP_USER already exists"
 fi
 
 ###########################################
-# 4. Application Directory Setup
+# 4. Clone Repository
 ###########################################
-echo_info "Setting up application directory..."
+info "Cloning repository to $APP_DIR..."
 
-# Backup .env if it exists
+# Backup .env if exists
 ENV_BACKUP=""
 if [ -f "$APP_DIR/.env" ]; then
     ENV_BACKUP=$(mktemp)
     cp "$APP_DIR/.env" "$ENV_BACKUP"
-    echo_info "Backed up existing .env configuration"
+    info "Backed up existing .env"
 fi
 
-# Clean application directory (except data directories)
-if [ -d "$APP_DIR" ]; then
-    echo_warn "Cleaning application directory (preserving outputs, jobs, input)..."
-    # Preserve data directories
-    [ -d "$APP_DIR/outputs" ] && mv "$APP_DIR/outputs" /tmp/artorize-outputs-backup 2>/dev/null || true
-    [ -d "$APP_DIR/gateway_jobs" ] && mv "$APP_DIR/gateway_jobs" /tmp/artorize-jobs-backup 2>/dev/null || true
-    [ -d "$APP_DIR/input" ] && mv "$APP_DIR/input" /tmp/artorize-input-backup 2>/dev/null || true
+# Backup data directories
+for dir in outputs gateway_jobs input; do
+    if [ -d "$APP_DIR/$dir" ]; then
+        mv "$APP_DIR/$dir" "/tmp/artorize-$dir-backup" 2>/dev/null || true
+    fi
+done
 
-    # Remove old installation
-    rm -rf $APP_DIR/*
-    rm -rf $APP_DIR/.*  2>/dev/null || true
+# Clone fresh copy
+rm -rf "$APP_DIR"
+git clone --depth 1 "$REPO_URL" "$APP_DIR"
 
-    # Restore data directories
-    [ -d /tmp/artorize-outputs-backup ] && mv /tmp/artorize-outputs-backup "$APP_DIR/outputs"
-    [ -d /tmp/artorize-jobs-backup ] && mv /tmp/artorize-jobs-backup "$APP_DIR/gateway_jobs"
-    [ -d /tmp/artorize-input-backup ] && mv /tmp/artorize-input-backup "$APP_DIR/input"
-fi
+# Restore data directories
+for dir in outputs gateway_jobs input; do
+    if [ -d "/tmp/artorize-$dir-backup" ]; then
+        mv "/tmp/artorize-$dir-backup" "$APP_DIR/$dir"
+    else
+        mkdir -p "$APP_DIR/$dir"
+    fi
+done
 
-# Create directory structure
-mkdir -p $APP_DIR
-mkdir -p $LOG_DIR
-mkdir -p $APP_DIR/input
-mkdir -p $APP_DIR/outputs
-mkdir -p $APP_DIR/gateway_jobs
-
-# Copy application files
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-echo_info "Copying files from $SCRIPT_DIR to $APP_DIR..."
-
-rsync -a --exclude='venv' \
-         --exclude='outputs' \
-         --exclude='gateway_jobs' \
-         --exclude='input' \
-         --exclude='__pycache__' \
-         --exclude='*.pyc' \
-         --exclude='.git' \
-         --exclude='.gitignore' \
-         --exclude='.DS_Store' \
-         --exclude='.idea' \
-         --exclude='.claude' \
-         "$SCRIPT_DIR/" "$APP_DIR/"
-
-# Restore .env if it was backed up
+# Restore .env
 if [ -n "$ENV_BACKUP" ] && [ -f "$ENV_BACKUP" ]; then
     cp "$ENV_BACKUP" "$APP_DIR/.env"
     rm "$ENV_BACKUP"
-    echo_info "Restored existing .env configuration"
+    info "Restored .env configuration"
 fi
 
-# Set ownership
-chown -R $APP_USER:$APP_USER $APP_DIR
-chown -R $APP_USER:$APP_USER $LOG_DIR
+# Create log directory
+mkdir -p "$LOG_DIR"
+chown -R $APP_USER:$APP_USER "$APP_DIR" "$LOG_DIR"
 
 ###########################################
-# 5. Virtual Environment Setup
+# 5. Python Virtual Environment
 ###########################################
-echo_info "Creating Python 3.12 virtual environment..."
+info "Creating Python 3.12 virtual environment..."
 
-# Always recreate venv to ensure Python 3.12
-if [ -d "$VENV_DIR" ]; then
-    echo_warn "Removing existing virtual environment..."
-    rm -rf $VENV_DIR
-fi
+# Remove old venv
+rm -rf "$VENV_DIR"
 
-# Verify Python 3.12 is available
-if ! command -v python3.12 &> /dev/null; then
-    echo_error "Python 3.12 not found. Installation may have failed."
-    exit 1
-fi
+# Create new venv with Python 3.12
+sudo -u $APP_USER python3.12 -m venv "$VENV_DIR"
 
-# Create venv with explicit Python 3.12
-sudo -u $APP_USER python3.12 -m venv $VENV_DIR
+# Verify venv Python version
+VENV_PY_VER=$($VENV_DIR/bin/python --version | awk '{print $2}' | cut -d. -f1,2)
+[[ "$VENV_PY_VER" != "3.12" ]] && error "Virtual environment not using Python 3.12 (found: $VENV_PY_VER)"
 
-# Verify venv is using Python 3.12
-VENV_PYTHON_VERSION=$($VENV_DIR/bin/python --version 2>&1)
-echo_info "Virtual environment created with: $VENV_PYTHON_VERSION"
+info "Installing Python dependencies..."
+sudo -u $APP_USER $VENV_DIR/bin/pip install --quiet --upgrade pip setuptools wheel
+sudo -u $APP_USER $VENV_DIR/bin/pip install --quiet -r $APP_DIR/requirements.txt
 
-if ! echo "$VENV_PYTHON_VERSION" | grep -q "3.12"; then
-    echo_error "Virtual environment is not using Python 3.12!"
-    echo_error "Found: $VENV_PYTHON_VERSION"
-    exit 1
-fi
+# Verify critical imports
+sudo -u $APP_USER $VENV_DIR/bin/python -c "import blockhash, PIL, fastapi" || \
+    error "Failed to import critical dependencies"
 
-# Verify requirements.txt exists
-if [ ! -f "$APP_DIR/requirements.txt" ]; then
-    echo_error "requirements.txt not found at $APP_DIR/requirements.txt"
-    echo_error "File copy may have failed. Contents of $APP_DIR:"
-    ls -la "$APP_DIR"
-    exit 1
-fi
-
-echo_info "Installing Python dependencies..."
-sudo -u $APP_USER $VENV_DIR/bin/pip install --upgrade pip setuptools wheel
-sudo -u $APP_USER $VENV_DIR/bin/pip install -r $APP_DIR/requirements.txt
-
-echo_info "Verifying blockhash compatibility..."
-if ! sudo -u $APP_USER $VENV_DIR/bin/python -c "import blockhash" 2>/dev/null; then
-    echo_error "blockhash import failed. Python 3.12 is required for compatibility."
-    echo_error "Note: pytineye has been removed from requirements (incompatible with Python 3.12+)."
-    exit 1
-fi
-
-echo_info "✓ Virtual environment verified with Python 3.12 and all dependencies installed"
+info "Virtual environment ready"
 
 ###########################################
-# 6. Configuration Files
+# 6. Environment Configuration
 ###########################################
-echo_info "Setting up configuration..."
-
-# Create environment file if it doesn't exist
 if [ ! -f "$APP_DIR/.env" ]; then
-    cat > "$APP_DIR/.env" << EOF
+    info "Creating default .env configuration..."
+    cat > "$APP_DIR/.env" << 'EOF'
 # Artorize Processor Configuration
 # Protection Pipeline Settings
 ARTORIZE_RUNNER__enable_fawkes=true
@@ -299,62 +183,34 @@ ARTORIZE_RUNNER__enable_photoguard=true
 ARTORIZE_RUNNER__enable_mist=true
 ARTORIZE_RUNNER__enable_nightshade=true
 ARTORIZE_RUNNER__watermark_strategy=invisible-watermark
-ARTORIZE_RUNNER__watermark_text=artscraper
 ARTORIZE_RUNNER__enable_c2pa_manifest=true
 ARTORIZE_RUNNER__enable_poison_mask=true
-ARTORIZE_RUNNER__poison_mask_filter_id=poison-mask
-ARTORIZE_RUNNER__poison_mask_css_class=poisoned-image
-ARTORIZE_RUNNER__max_stage_dim=512
-ARTORIZE_RUNNER__include_hash_analysis=true
-ARTORIZE_RUNNER__include_tineye=false
 
-# Gateway Server Configuration
-GATEWAY_PORT=$GATEWAY_PORT
+# Gateway Configuration
+GATEWAY_PORT=8765
 GATEWAY_HOST=0.0.0.0
 GATEWAY_WORKERS=4
-GATEWAY_DEBUG=false
 
-# Storage Configuration
+# Storage (local/s3/cdn)
 STORAGE_TYPE=local
-# For S3: STORAGE_TYPE=s3, S3_BUCKET=your-bucket, S3_REGION=us-east-1
-# For CDN: STORAGE_TYPE=cdn, CDN_BASE_URL=https://cdn.example.com
 
-# Backend Upload Configuration (optional)
-# BACKEND_URL=https://api.artorize.com
-# BACKEND_AUTH_TOKEN=your-token-here
-# BACKEND_TIMEOUT=30.0
-
-# Logging Configuration
-LOG_LEVEL=INFO
-LOG_FORMAT=text
-
-# Performance Settings
+# Performance
 MAX_CONCURRENT_JOBS=4
-JOB_TIMEOUT=300
-REQUEST_TIMEOUT=60
-MAX_UPLOAD_SIZE_MB=100
-
-# GPU Configuration (set to true if GPU available)
 GPU_ENABLED=false
-CUDA_DEVICE=0
 
-# Application Environment
-APP_ENV=production
+# Logging
+LOG_LEVEL=INFO
 EOF
     chown $APP_USER:$APP_USER "$APP_DIR/.env"
-    echo_info "Created default .env file"
-else
-    echo_info ".env file already exists (keeping existing configuration)"
 fi
 
 ###########################################
-# 7. Systemd Services (Production Mode)
+# 7. Systemd Services
 ###########################################
-if [ "$DEPLOY_MODE" = "production" ] || [ "$DEPLOY_MODE" = "--production" ]; then
-    echo_info "Setting up systemd services..."
+info "Creating systemd services..."
 
-    # Gateway service
-    cat > "/etc/systemd/system/${GATEWAY_SERVICE}.service" << EOF
+# Gateway service
+cat > "/etc/systemd/system/${GATEWAY_SERVICE}.service" << EOF
 [Unit]
 Description=Artorize Image Protection Gateway
 After=network.target
@@ -372,23 +228,22 @@ RestartSec=10
 StandardOutput=append:$LOG_DIR/gateway.log
 StandardError=append:$LOG_DIR/gateway-error.log
 
-# Security settings
+# Security
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=$APP_DIR/outputs $APP_DIR/gateway_jobs $LOG_DIR
 
-# Resource limits
+# Resources
 LimitNOFILE=65536
-TasksMax=4096
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    # Runner service (for background processing)
-    cat > "/etc/systemd/system/${RUNNER_SERVICE}.service" << EOF
+# Runner service (optional - gateway has internal workers)
+cat > "/etc/systemd/system/${RUNNER_SERVICE}.service" << EOF
 [Unit]
 Description=Artorize Image Protection Pipeline Runner
 After=network.target
@@ -400,255 +255,91 @@ Group=$APP_USER
 WorkingDirectory=$APP_DIR
 Environment="PATH=$VENV_DIR/bin"
 EnvironmentFile=$APP_DIR/.env
+# Note: Gateway has internal workers. This service is optional for batch processing.
+# Disable with: systemctl disable ${RUNNER_SERVICE}
 ExecStart=$VENV_DIR/bin/python -m artorize_runner.protection_pipeline_gpu
-Restart=always
+Restart=on-failure
 RestartSec=10
 StandardOutput=append:$LOG_DIR/runner.log
 StandardError=append:$LOG_DIR/runner-error.log
 
-# Security settings
+# Security
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=$APP_DIR/outputs $APP_DIR/input $APP_DIR/gateway_jobs $LOG_DIR
 
-# Resource limits
+# Resources
 LimitNOFILE=65536
-TasksMax=4096
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    systemctl daemon-reload
-    systemctl enable $GATEWAY_SERVICE
-    systemctl enable $RUNNER_SERVICE
+systemctl daemon-reload
+systemctl enable $GATEWAY_SERVICE
+# Enable runner optionally (gateway has internal workers)
+systemctl enable $RUNNER_SERVICE
 
-    echo_info "Systemd services created:"
-    echo_info "  - ${GATEWAY_SERVICE}.service (HTTP API gateway)"
-    echo_info "  - ${RUNNER_SERVICE}.service (Background pipeline runner)"
-fi
+info "Services created and enabled"
 
 ###########################################
-# 8. Nginx Configuration (Production Mode)
+# 8. Start Services
 ###########################################
-if [ "$DEPLOY_MODE" = "production" ] || [ "$DEPLOY_MODE" = "--production" ]; then
-    echo_info "Setting up Nginx reverse proxy..."
+info "Starting services..."
 
-    cat > "/etc/nginx/sites-available/artorize" << EOF
-upstream artorize_gateway {
-    server 127.0.0.1:$GATEWAY_PORT;
-}
+systemctl restart $GATEWAY_SERVICE
+systemctl restart $RUNNER_SERVICE
+sleep 3
 
-server {
-    listen 80;
-    server_name _;
-
-    client_max_body_size 100M;
-
-    location / {
-        proxy_pass http://artorize_gateway;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-
-        # Timeouts for long-running image processing
-        proxy_connect_timeout 300s;
-        proxy_send_timeout 300s;
-        proxy_read_timeout 300s;
-    }
-
-    location /health {
-        proxy_pass http://artorize_gateway/health;
-        access_log off;
-    }
-}
-EOF
-
-    ln -sf /etc/nginx/sites-available/artorize /etc/nginx/sites-enabled/
-    rm -f /etc/nginx/sites-enabled/default
-
-    nginx -t && systemctl restart nginx
-    echo_info "Nginx configured and restarted"
-fi
-
-###########################################
-# 9. Firewall Configuration
-###########################################
-if command -v ufw &> /dev/null; then
-    echo_info "Configuring firewall..."
-    ufw allow 80/tcp
-    ufw allow 443/tcp
-    ufw allow 22/tcp
-    echo_info "Firewall rules updated"
-fi
-
-###########################################
-# 10. GPU Support (Optional)
-###########################################
-if lspci | grep -i nvidia &> /dev/null; then
-    echo_info "NVIDIA GPU detected. To enable GPU support:"
-    echo_info "  1. Install NVIDIA drivers: apt-get install nvidia-driver"
-    echo_info "  2. Install CUDA toolkit"
-    echo_info "  3. Install PyTorch with CUDA support in the virtualenv"
+# Check gateway status
+if systemctl is-active --quiet $GATEWAY_SERVICE; then
+    info "✓ Gateway service started"
 else
-    echo_info "No NVIDIA GPU detected. Deployment will use CPU-only mode."
-fi
-
-###########################################
-# 11. Start Services (Production Mode)
-###########################################
-if [ "$DEPLOY_MODE" = "production" ] || [ "$DEPLOY_MODE" = "--production" ]; then
-    echo_info "Starting services..."
-
-    systemctl restart $GATEWAY_SERVICE
-    systemctl restart $RUNNER_SERVICE
-    sleep 3
-
-    GATEWAY_STATUS="✓"
-    RUNNER_STATUS="✓"
-
-    if systemctl is-active --quiet $GATEWAY_SERVICE; then
-        echo_info "✓ Gateway service started successfully"
-    else
-        echo_error "✗ Gateway service failed to start. Check logs:"
-        echo "  journalctl -u ${GATEWAY_SERVICE} -n 50"
-        GATEWAY_STATUS="✗"
-    fi
-
-    if systemctl is-active --quiet $RUNNER_SERVICE; then
-        echo_info "✓ Runner service started successfully"
-    else
-        echo_warn "✗ Runner service failed to start. Check logs:"
-        echo "  journalctl -u ${RUNNER_SERVICE} -n 50"
-        RUNNER_STATUS="✗"
-    fi
-
-    if [ "$GATEWAY_STATUS" = "✗" ]; then
-        exit 1
-    fi
-fi
-
-###########################################
-# 12. Post-Deployment Verification
-###########################################
-echo_info "Running post-deployment verification..."
-
-# Verify Python version in virtual environment
-VENV_PYTHON_VERSION=$($VENV_DIR/bin/python --version 2>&1 | awk '{print $2}')
-echo_info "Virtual environment Python version: $VENV_PYTHON_VERSION"
-
-# Verify critical dependencies
-echo_info "Verifying critical dependencies..."
-if ! sudo -u $APP_USER $VENV_DIR/bin/python -c "import blockhash" 2>/dev/null; then
-    echo_error "blockhash import failed. Installation may be incomplete."
+    warn "✗ Gateway service failed. Check: journalctl -u ${GATEWAY_SERVICE} -n 50"
     exit 1
 fi
 
-if ! sudo -u $APP_USER $VENV_DIR/bin/python -c "import PIL" 2>/dev/null; then
-    echo_error "Pillow import failed. Installation may be incomplete."
-    exit 1
-fi
-
-if ! sudo -u $APP_USER $VENV_DIR/bin/python -c "import fastapi" 2>/dev/null; then
-    echo_error "FastAPI import failed. Installation may be incomplete."
-    exit 1
-fi
-
-echo_info "✓ All critical dependencies verified"
-
-# Health check (production mode only)
-if [ "$DEPLOY_MODE" = "production" ] || [ "$DEPLOY_MODE" = "--production" ]; then
-    echo_info "Running health check..."
-    sleep 3
-
-    if curl -f http://localhost:$GATEWAY_PORT/health &> /dev/null; then
-        echo_info "✓ Health check passed!"
-    else
-        echo_warn "Health check failed. Service may still be starting..."
-        echo_warn "Check logs: journalctl -u ${GATEWAY_SERVICE} -n 50"
-    fi
-fi
-
-###########################################
-# Deployment Summary
-###########################################
-echo ""
-echo_info "================================================"
-echo_info "Artorize Processor Deployment Complete!"
-echo_info "================================================"
-echo ""
-echo_info "Application Directory: $APP_DIR"
-echo_info "Virtual Environment: $VENV_DIR"
-echo_info "Log Directory: $LOG_DIR"
-echo ""
-
-if [ "$DEPLOY_MODE" = "production" ] || [ "$DEPLOY_MODE" = "--production" ]; then
-    echo_info "Service Management:"
-    echo ""
-    echo "  Gateway Service:"
-    echo "    Start:   systemctl start ${GATEWAY_SERVICE}"
-    echo "    Stop:    systemctl stop ${GATEWAY_SERVICE}"
-    echo "    Restart: systemctl restart ${GATEWAY_SERVICE}"
-    echo "    Status:  systemctl status ${GATEWAY_SERVICE}"
-    echo "    Logs:    journalctl -u ${GATEWAY_SERVICE} -f"
-    echo ""
-    echo "  Runner Service:"
-    echo "    Start:   systemctl start ${RUNNER_SERVICE}"
-    echo "    Stop:    systemctl stop ${RUNNER_SERVICE}"
-    echo "    Restart: systemctl restart ${RUNNER_SERVICE}"
-    echo "    Status:  systemctl status ${RUNNER_SERVICE}"
-    echo "    Logs:    journalctl -u ${RUNNER_SERVICE} -f"
-    echo ""
-    echo_info "Gateway running at: http://localhost:$GATEWAY_PORT"
-    echo_info "Access via Nginx: http://your-server-ip/"
-    echo_info "Runner: Processes images from input/ directory automatically"
+# Check runner status (non-fatal)
+if systemctl is-active --quiet $RUNNER_SERVICE; then
+    info "✓ Runner service started"
 else
-    echo_info "Development Mode - Manual Start:"
-    echo "  cd $APP_DIR"
-    echo "  source venv/bin/activate"
-    echo "  # Start gateway:"
-    echo "  python -m artorize_gateway"
-    echo "  # Start runner (in another terminal):"
-    echo "  python -m artorize_runner.protection_pipeline_gpu"
+    warn "✗ Runner service failed. Check: journalctl -u ${RUNNER_SERVICE} -n 50"
+    warn "Note: Runner is optional if using gateway's internal workers"
 fi
 
-echo ""
-echo_info "Configuration file: $APP_DIR/.env"
-echo_info "Test the API: curl http://localhost:$GATEWAY_PORT/health"
-echo ""
-echo_info "Next steps:"
-echo "  1. Review and update $APP_DIR/.env for your environment"
-echo "  2. Configure SSL/TLS with Let's Encrypt (production)"
-echo "  3. Set up monitoring and log rotation"
-echo "  4. Configure CDN/S3 storage credentials if needed"
-echo "  5. Review DEPLOYMENT.md for detailed operational guidance"
-echo ""
+# Health check
+info "Running health check..."
+sleep 2
+if curl -f http://localhost:8765/health &> /dev/null; then
+    info "✓ Health check passed"
+else
+    warn "Health check failed (service may still be starting)"
+fi
 
 ###########################################
-# Quick Reference Card
+# Deployment Complete
 ###########################################
-if [ "$DEPLOY_MODE" = "production" ] || [ "$DEPLOY_MODE" = "--production" ]; then
-    echo_info "Quick Reference:"
-    echo ""
-    echo "  Service Control:"
-    echo "    systemctl status ${GATEWAY_SERVICE}    # Check gateway status"
-    echo "    systemctl status ${RUNNER_SERVICE}     # Check runner status"
-    echo "    systemctl restart ${GATEWAY_SERVICE}   # Restart gateway"
-    echo "    systemctl restart ${RUNNER_SERVICE}    # Restart runner"
-    echo "    journalctl -u ${GATEWAY_SERVICE} -f    # Follow gateway logs"
-    echo "    journalctl -u ${RUNNER_SERVICE} -f     # Follow runner logs"
-    echo ""
-    echo "  Testing:"
-    echo "    curl http://localhost:$GATEWAY_PORT/health"
-    echo ""
-    echo "  File Locations:"
-    echo "    Application:  $APP_DIR"
-    echo "    Logs:         $LOG_DIR"
-    echo "    Config:       $APP_DIR/.env"
-    echo "    Outputs:      $APP_DIR/outputs"
-    echo "    Input:        $APP_DIR/input  (monitored by runner)"
-    echo ""
-fi
+echo ""
+info "================================================"
+info "Artorize Processor Deployment Complete!"
+info "================================================"
+echo ""
+info "Services:"
+echo "  Gateway: http://localhost:8765"
+echo "  Status:  systemctl status ${GATEWAY_SERVICE}"
+echo "  Logs:    journalctl -u ${GATEWAY_SERVICE} -f"
+echo ""
+info "File Locations:"
+echo "  App:     $APP_DIR"
+echo "  Config:  $APP_DIR/.env"
+echo "  Logs:    $LOG_DIR"
+echo ""
+info "Service Management:"
+echo "  systemctl restart ${GATEWAY_SERVICE}"
+echo "  systemctl restart ${RUNNER_SERVICE}"
+echo "  journalctl -u ${GATEWAY_SERVICE} -f"
+echo ""
+info "Test API: curl http://localhost:8765/health"
+echo ""

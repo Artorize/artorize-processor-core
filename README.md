@@ -13,16 +13,18 @@ Image protection pipeline that applies multiple adversarial perturbations (Fawke
 
 **One-liner Auto-Deploy:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Artorize/artorize-processor-core/main/deploy.sh | sudo bash -s -- --production
+curl -fsSL https://raw.githubusercontent.com/Artorize/artorize-processor-core/main/deploy.sh | sudo bash
 ```
 
 This will automatically:
 - Install Python 3.12 and system dependencies
 - Clone the repository to `/opt/artorize-processor`
 - Create a dedicated `artorize` system user
-- Set up a systemd service named `artorize-processor`
-- Configure Nginx reverse proxy
-- Start the gateway API on port 8765
+- Set up virtual environment and install all dependencies
+- Create two systemd services:
+  - **`artorize-processor-gateway`** - FastAPI server with internal job queue (port 8765)
+  - **`artorize-processor-runner`** - Optional batch processing service
+- Start both services automatically
 
 **Manual Deployment:**
 ```bash
@@ -31,18 +33,29 @@ git clone https://github.com/Artorize/artorize-processor-core.git
 cd artorize-processor-core
 
 # Run deployment script
-sudo ./deploy.sh --production
+sudo bash deploy.sh
 
 # Check service status
-sudo systemctl status artorize-processor
+sudo systemctl status artorize-processor-gateway
+sudo systemctl status artorize-processor-runner
 ```
 
 **Service Management:**
 ```bash
-sudo systemctl start artorize-processor    # Start service
-sudo systemctl stop artorize-processor     # Stop service
-sudo systemctl restart artorize-processor  # Restart service
-sudo journalctl -u artorize-processor -f   # View logs
+# Gateway (required - handles HTTP API and job queue)
+sudo systemctl start artorize-processor-gateway
+sudo systemctl stop artorize-processor-gateway
+sudo systemctl restart artorize-processor-gateway
+sudo journalctl -u artorize-processor-gateway -f
+
+# Runner (optional - for batch processing)
+sudo systemctl start artorize-processor-runner
+sudo systemctl stop artorize-processor-runner
+sudo systemctl restart artorize-processor-runner
+sudo journalctl -u artorize-processor-runner -f
+
+# Disable runner if not needed (gateway has internal workers)
+sudo systemctl disable artorize-processor-runner
 ```
 
 ## Quick Start
@@ -65,8 +78,8 @@ py -3.12 -m artorize_runner.protection_pipeline_gpu
 # Single image analysis
 py -3.12 -m artorize_runner.cli path\to\image.jpg --json-out report.json
 
-# Start HTTP API server
-py -3.12 -m artorize_gateway --host 0.0.0.0 --port 8000
+# Start HTTP API server (listens on 127.0.0.1:8765)
+py -3.12 -m artorize_gateway
 ```
 
 ### GPU Pipeline Checklist
@@ -125,6 +138,59 @@ Environment variables use `ARTORIZE_RUNNER_` prefix:
 ARTORIZE_RUNNER_WORKFLOW__ENABLE_FAWKES=true
 ARTORIZE_RUNNER_WORKFLOW__WATERMARK_STRATEGY=tree-ring
 ```
+
+## HTTP Gateway Server
+
+### Default Configuration
+
+- **Host**: `127.0.0.1` (localhost only)
+- **Port**: `8765`
+
+The gateway server listens on `127.0.0.1` by default for security reasons, making it accessible only from the local machine. This prevents unauthorized external access.
+
+### Production Security
+
+**IMPORTANT**: For production deployments, it is **strongly recommended** to use a reverse proxy (such as Nginx or Apache) instead of exposing the gateway directly to the internet.
+
+**Example Nginx Configuration:**
+
+```nginx
+server {
+    listen 80;
+    server_name api.yourdomain.com;
+
+    # Optional: SSL/TLS configuration
+    # listen 443 ssl;
+    # ssl_certificate /path/to/cert.pem;
+    # ssl_certificate_key /path/to/key.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:8765;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Recommended: Add rate limiting
+        limit_req zone=api_limit burst=10 nodelay;
+
+        # Recommended: Add authentication
+        # auth_basic "Restricted Access";
+        # auth_basic_user_file /etc/nginx/.htpasswd;
+    }
+}
+
+# Rate limiting zone (add to http block)
+# limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s;
+```
+
+**Benefits of using a reverse proxy:**
+- SSL/TLS termination
+- Rate limiting and DDoS protection
+- Authentication and access control
+- Load balancing across multiple gateway instances
+- Static file serving and caching
+- Request logging and monitoring
 
 ## Documentation
 
