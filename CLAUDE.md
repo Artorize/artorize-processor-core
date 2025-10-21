@@ -4,31 +4,31 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Python Version Requirement
 
-**IMPORTANT**: This project requires Python 3.12.x (specifically 3.12.10 or compatible).
-The `blockhash` library is not compatible with Python 3.13+.
+**IMPORTANT**: This project requires Python 3.11.x (specifically 3.11.9 or compatible).
+The `blockhash` library dependency chain (specifically `future==0.18.2` required by `pytineye`) is not compatible with Python 3.12+ due to the removal of the `imp` module.
 
-**Always use `py -3.12`** (not `py -3` or `python3`) for all Python commands to ensure compatibility.
+**Always use `py -3.11`** (not `py -3` or `python3`) for all Python commands to ensure compatibility.
 
 ## Core Commands
 
 ### Running the Pipeline
 ```powershell
 # Main protection pipeline (processes images from input/ to outputs/)
-py -3.12 -m artorize_runner.protection_pipeline
+py -3.11 -m artorize_runner.protection_pipeline
 
 # GPU-accelerated pipeline with parallel processing
-py -3.12 -m artorize_runner.protection_pipeline_gpu
+py -3.11 -m artorize_runner.protection_pipeline_gpu
 
 # GPU pipeline with custom options
-py -3.12 -m artorize_runner.protection_pipeline_gpu --workers 4 --no-gpu  # Disable GPU
-py -3.12 -m artorize_runner.protection_pipeline_gpu --multiprocessing     # Use multiprocessing
-py -3.12 -m artorize_runner.protection_pipeline_gpu --no-analysis        # Skip hash analysis
+py -3.11 -m artorize_runner.protection_pipeline_gpu --workers 4 --no-gpu  # Disable GPU
+py -3.11 -m artorize_runner.protection_pipeline_gpu --multiprocessing     # Use multiprocessing
+py -3.11 -m artorize_runner.protection_pipeline_gpu --no-analysis        # Skip hash analysis
 
 # CLI for single image analysis
-py -3.12 -m artorize_runner.cli path\to\image.jpg --json-out report.json
+py -3.11 -m artorize_runner.cli path\to\image.jpg --json-out report.json
 
 # Start HTTP gateway server (FastAPI on port 8765)
-py -3.12 -m artorize_gateway
+py -3.11 -m artorize_gateway
 ```
 
 ### Testing
@@ -52,10 +52,10 @@ Remove-Item Env:PYTHONPATH
 ### Dependencies
 ```powershell
 # Install all dependencies
-py -3.12 -m pip install -r requirements.txt
+py -3.11 -m pip install -r requirements.txt
 
 # Check installed packages
-py -3.12 -m pip list
+py -3.11 -m pip list
 ```
 
 ## Architecture Overview

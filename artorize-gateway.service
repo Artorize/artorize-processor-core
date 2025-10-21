@@ -1,0 +1,32 @@
+# NOTE: This service requires Python 3.11 (not 3.12+)
+# The venv must be created with: python3.11 -m venv venv
+[Unit]
+Description=Artorize Image Protection Gateway
+After=network.target
+
+[Service]
+Type=simple
+User=artorize
+Group=artorize
+WorkingDirectory=/opt/artorize-processor
+Environment="PATH=/opt/artorize-processor/venv/bin"
+EnvironmentFile=/opt/artorize-processor/.env
+ExecStart=/opt/artorize-processor/venv/bin/python -m artorize_gateway
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/artorize/gateway.log
+StandardError=append:/var/log/artorize/gateway-error.log
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/artorize-processor/outputs /opt/artorize-processor/gateway_jobs /var/log/artorize
+
+# Resource limits
+LimitNOFILE=65536
+TasksMax=4096
+
+[Install]
+WantedBy=multi-user.target

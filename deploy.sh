@@ -25,7 +25,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 DEPLOY_MODE="${1:-production}"
-PYTHON_VERSION="3.12"
+PYTHON_VERSION="3.11"
 APP_USER="artorize"
 APP_DIR="/opt/artorize-processor"
 VENV_DIR="${APP_DIR}/venv"
@@ -108,50 +108,50 @@ apt-get install -y \
     libxmlsec1-dev
 
 ###########################################
-# 2. Python 3.12 Installation
+# 2. Python 3.11 Installation
 ###########################################
-echo_info "Checking Python 3.12 installation..."
+echo_info "Checking Python 3.11 installation..."
 
-if ! command -v python3.12 &> /dev/null; then
-    echo_info "Python 3.12 not found. Installing from deadsnakes PPA..."
+if ! command -v python3.11 &> /dev/null; then
+    echo_info "Python 3.11 not found. Installing from deadsnakes PPA..."
 
-    # Add deadsnakes PPA for Python 3.12
+    # Add deadsnakes PPA for Python 3.11
     apt-get install -y software-properties-common
     add-apt-repository -y ppa:deadsnakes/ppa || {
         echo_warn "PPA not available for Debian. Building from source..."
 
         cd /tmp
-        wget https://www.python.org/ftp/python/3.12.10/Python-3.12.10.tgz
-        tar -xf Python-3.12.10.tgz
-        cd Python-3.12.10
+        wget https://www.python.org/ftp/python/3.11.9/Python-3.11.9.tgz
+        tar -xf Python-3.11.9.tgz
+        cd Python-3.11.9
         ./configure --enable-optimizations
         make -j$(nproc)
         make altinstall
         cd /
-        rm -rf /tmp/Python-3.12.10*
+        rm -rf /tmp/Python-3.11.9*
     }
 
     apt-get update
-    apt-get install -y python3.12 python3.12-venv python3.12-dev || true
+    apt-get install -y python3.11 python3.11-venv python3.11-dev || true
 fi
 
-# Verify Python 3.12
-if ! python3.12 --version &> /dev/null; then
-    echo_error "Python 3.12 installation failed"
+# Verify Python 3.11
+if ! python3.11 --version &> /dev/null; then
+    echo_error "Python 3.11 installation failed"
     exit 1
 fi
 
-PYTHON_VERSION=$(python3.12 --version 2>&1 | awk '{print $2}')
+PYTHON_VERSION=$(python3.11 --version 2>&1 | awk '{print $2}')
 PYTHON_MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
 PYTHON_MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
 
-if [ "$PYTHON_MAJOR" != "3" ] || [ "$PYTHON_MINOR" != "12" ]; then
-    echo_error "Python 3.12.x is required for blockhash compatibility"
+if [ "$PYTHON_MAJOR" != "3" ] || [ "$PYTHON_MINOR" != "11" ]; then
+    echo_error "Python 3.11.x is required for blockhash compatibility (Python 3.12+ breaks pytineye/future)"
     echo_error "Found: Python $PYTHON_VERSION"
     exit 1
 fi
 
-echo_info "Python 3.12 installed: $(python3.12 --version)"
+echo_info "Python 3.11 installed: $(python3.11 --version)"
 echo_info "✓ Python version check passed"
 
 ###########################################
@@ -204,7 +204,7 @@ if [ -d "$VENV_DIR" ]; then
     rm -rf $VENV_DIR
 fi
 
-sudo -u $APP_USER python3.12 -m venv $VENV_DIR
+sudo -u $APP_USER python3.11 -m venv $VENV_DIR
 
 echo_info "Installing Python dependencies..."
 sudo -u $APP_USER $VENV_DIR/bin/pip install --upgrade pip setuptools wheel
@@ -212,7 +212,8 @@ sudo -u $APP_USER $VENV_DIR/bin/pip install -r $APP_DIR/requirements.txt
 
 echo_info "Verifying blockhash compatibility..."
 if ! sudo -u $APP_USER $VENV_DIR/bin/python -c "import blockhash" 2>/dev/null; then
-    echo_error "blockhash import failed. Python 3.12 is required for compatibility."
+    echo_error "blockhash import failed. Python 3.11 is required for compatibility."
+    echo_error "Python 3.12+ is incompatible due to removal of 'imp' module used by pytineye/future."
     exit 1
 fi
 
