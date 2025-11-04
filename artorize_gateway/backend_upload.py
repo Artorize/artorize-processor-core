@@ -112,22 +112,36 @@ class BackendUploadClient:
         else:
             logger.warning('No authentication token provided for backend upload')
 
-        # Validate required files
+        # Validate required files with detailed error messages
         missing_files = []
+        file_details = []
 
         if not original_image_path or not original_image_path.exists():
             missing_files.append('original image')
+            file_details.append(f"original image: {original_image_path if original_image_path else 'None'}")
         if not protected_image_path or not protected_image_path.exists():
             missing_files.append('protected image')
+            file_details.append(f"protected image: {protected_image_path if protected_image_path else 'None'}")
         if not mask_path or not mask_path.exists():
             missing_files.append('SAC mask file')
+            file_details.append(f"SAC mask: {mask_path if mask_path else 'None'}")
+            # Log additional diagnostic info for SAC mask issues
+            if summary and summary.get('layers'):
+                layers = summary['layers']
+                has_sac_layers = [l.get('stage') for l in layers if l.get('has_sac_mask')]
+                final_comparison = [l for l in layers if l.get('stage') == 'final-comparison']
+                logger.error(f"SAC mask diagnostic: layers_with_has_sac_mask={has_sac_layers}, "
+                           f"has_final_comparison={len(final_comparison) > 0}, "
+                           f"final_comparison_data={final_comparison[0] if final_comparison else 'N/A'}")
         if not analysis:
             missing_files.append('analysis JSON')
+            file_details.append('analysis JSON: None')
         if not summary:
             missing_files.append('summary JSON')
+            file_details.append('summary JSON: None')
 
         if missing_files:
-            error_msg = f"Required files missing for backend upload: {', '.join(missing_files)}"
+            error_msg = f"Required files missing for backend upload: {', '.join(missing_files)}. Details: {' | '.join(file_details)}"
             logger.error(error_msg)
             raise BackendUploadError(error_msg)
 
