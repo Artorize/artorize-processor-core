@@ -296,37 +296,77 @@ async def _send_callback_on_completion(
             if result.summary.get("layers"):
                 layers = result.summary["layers"]
                 if layers:
-                    # Find the last protection layer with SAC mask data
-                    final_layer = None
+                    # STRATEGY 1: Look for final-comparison layer (preferred - contains mandatory SAC mask)
+                    final_comparison_layer = None
                     for layer in reversed(layers):
-                        if layer.get("has_sac_mask"):
-                            final_layer = layer
+                        if layer.get("stage") == "final-comparison" and layer.get("has_sac_mask"):
+                            final_comparison_layer = layer
                             break
 
-                    # Fallback: find last protection layer without errors
-                    if not final_layer:
+                    if final_comparison_layer:
+                        # Final-comparison layer found - extract mask from it
+                        if "poison_mask_sac_path" in final_comparison_layer:
+                            mask_path = Path(final_comparison_layer["poison_mask_sac_path"])
+
+                        # Find the actual final protected image from the last protection layer
                         for layer in reversed(layers):
-                            if layer.get("is_protection_layer") and not layer.get("error"):
+                            if layer.get("is_protection_layer") and layer.get("path") and not layer.get("error"):
+                                final_layer_path = Path(layer["path"])
+                                break
+                    else:
+                        # STRATEGY 2: Fallback to last protection layer with SAC mask (for backwards compatibility)
+                        final_layer = None
+                        for layer in reversed(layers):
+                            if layer.get("has_sac_mask") and layer.get("path"):
                                 final_layer = layer
                                 break
 
-                    if not final_layer:
-                        raise RuntimeError("No valid protection layer found in processing results")
+                        # STRATEGY 3: Fallback to last protection layer without errors
+                        if not final_layer:
+                            for layer in reversed(layers):
+                                if layer.get("is_protection_layer") and not layer.get("error"):
+                                    final_layer = layer
+                                    break
 
-                    final_layer_path = Path(final_layer["path"])
+                        if not final_layer:
+                            raise RuntimeError(
+                                f"No valid protection layer found. Checked {len(layers)} layers. "
+                                f"Layer stages: {[l.get('stage') for l in layers]}"
+                            )
 
-                    # Look for combined SAC mask in the final layer's poison mask data
-                    if "poison_mask_sac_path" in final_layer:
-                        mask_path = Path(final_layer["poison_mask_sac_path"])
+                        final_layer_path = Path(final_layer["path"]) if final_layer.get("path") else None
 
-                    # Fallback: If not found in metadata, try to find by pattern
+                        # Look for combined SAC mask in the final layer's poison mask data
+                        if "poison_mask_sac_path" in final_layer:
+                            mask_path = Path(final_layer["poison_mask_sac_path"])
+
+                    # STRATEGY 4: Pattern-based fallback if mask still not found
                     if not mask_path or not mask_path.exists():
-                        # Look for mask.sac files in the layer directory
-                        if final_layer_path and final_layer_path.exists():
-                            layer_dir = final_layer_path.parent
-                            for mask_file in layer_dir.glob("*_mask.sac"):
-                                mask_path = mask_file
-                                break
+                        # Try to find SAC mask by searching all layer directories
+                        search_attempted = False
+                        for layer in reversed(layers):
+                            if layer.get("path"):
+                                layer_path = Path(layer["path"])
+                                if layer_path.exists():
+                                    search_attempted = True
+                                    layer_dir = layer_path.parent
+                                    # Look for final-comparison mask first
+                                    for mask_file in layer_dir.glob("*final-comparison_mask.sac"):
+                                        mask_path = mask_file
+                                        break
+                                    # If not found, look for any mask.sac file
+                                    if not mask_path:
+                                        for mask_file in layer_dir.glob("*_mask.sac"):
+                                            mask_path = mask_file
+                                            break
+                                if mask_path:
+                                    break
+
+                        if not mask_path and search_attempted:
+                            raise RuntimeError(
+                                "SAC mask file not found in any layer directory. "
+                                "This may indicate the protection pipeline did not complete properly."
+                            )
 
             if not final_layer_path or not final_layer_path.exists():
                 raise RuntimeError("Final protected image not found")

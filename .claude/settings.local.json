@@ -25,7 +25,10 @@
       "Bash(chmod:*)",
       "Bash(pip index:*)",
       "Bash(python3 -m pip:*)",
-      "WebFetch(domain:pypi.org)"
+      "WebFetch(domain:pypi.org)",
+      "Bash(for dir in outputs/Mona_Lisa,_by_Leonardo_da_Vinci,_from_C2RMF_retouched/layers/*/)",
+      "Bash(ls:*)",
+      "Bash(done)"
     ],
     "deny": [],
     "ask": []

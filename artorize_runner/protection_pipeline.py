@@ -468,6 +468,7 @@ def _apply_layers(
                 "description": "Complete protection mask (final vs original)",
                 "path": None,
                 "processing_size": list(original.size),
+                "has_sac_mask": True,  # Explicitly mark that SAC mask exists (final comparison always has SAC)
                 **final_poison_mask_data
             })
 
