@@ -16,8 +16,10 @@ EnvironmentFile=/opt/artorize-processor/.env
 # - Separate processing pool
 # - Manual pipeline execution
 # To disable: systemctl disable artorize-processor-runner
+#
+# Pipeline automatically detects and uses GPU if available
 
-ExecStart=/opt/artorize-processor/venv/bin/python -m artorize_runner.protection_pipeline_gpu
+ExecStart=/opt/artorize-processor/venv/bin/python -m artorize_runner.pipeline
 Restart=on-failure
 RestartSec=10
 StandardOutput=append:/var/log/artorize/runner.log
