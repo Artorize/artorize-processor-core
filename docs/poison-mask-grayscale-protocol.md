@@ -232,12 +232,12 @@ Reconstruction Quality:
 
 **Grayscale masks with SAC v1.1 single-array mode** are the optimal choice for the Artorize poison mask protocol because:
 
-✓ **6x smaller file sizes** (84% reduction) → faster CDN delivery, lower bandwidth costs
-✓ **8.6x faster generation** → better pipeline throughput
-✓ **3.8x faster encoding** → reduced server CPU load
-✓ **50% less browser memory** → single array reference instead of duplicate
-✓ **Minor quality loss** (33 dB PSNR) → imperceptible in practice
-✓ **Simpler protocol** → no multi-channel complexity
+- **6x smaller file sizes** (84% reduction) - faster CDN delivery, lower bandwidth costs
+- **8.6x faster generation** - better pipeline throughput
+- **3.8x faster encoding** - reduced server CPU load
+- **50% less browser memory** - single array reference instead of duplicate
+- **Minor quality loss** (33 dB PSNR) - imperceptible in practice
+- **Simpler protocol** - no multi-channel complexity
 
 The small reconstruction error is negligible compared to the large protection perturbations already applied, making grayscale masks with SAC v1.1 the clear winner for production deployment.
 

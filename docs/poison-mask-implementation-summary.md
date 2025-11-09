@@ -55,7 +55,7 @@ Successfully implemented grayscale poison masks with SAC v1.1 single-array optim
 ### File Size (512×344px image)
 - **RGB SAC v1.0 (3 files)**: 2,064 KB
 - **Grayscale SAC v1.0**: 688 KB (67% smaller)
-- **Grayscale SAC v1.1**: 344 KB (84% smaller) ✓
+- **Grayscale SAC v1.1**: 344 KB (84% smaller) [SELECTED]
 
 ### Encoding Performance
 - Mask generation: **8.6x faster** (2.35ms vs 19.30ms)
@@ -129,10 +129,10 @@ Mask generation: 2.35ms (grayscale)
 SAC v1.1 encoding: 0.75ms
 
 Header validation:
-  ✓ Magic: SAC1
-  ✓ Flags: 0x01 (SINGLE_ARRAY=True)
-  ✓ Arrays count: 1
-  ✓ Payload size: 352,256 bytes (only array A)
+  - Magic: SAC1
+  - Flags: 0x01 (SINGLE_ARRAY=True)
+  - Arrays count: 1
+  - Payload size: 352,256 bytes (only array A)
 
 File size comparison:
   SAC v1.0 (dual): 704,536 bytes (688 KB)
@@ -178,10 +178,10 @@ File size comparison:
 
 The grayscale + SAC v1.1 implementation achieves:
 
-✓ **6x smaller files** (84% reduction)
-✓ **10x faster encoding**
-✓ **50% less browser memory**
-✓ **Negligible quality loss** (33 dB PSNR)
-✓ **Simple protocol** (single flag bit)
+- **6x smaller files** (84% reduction)
+- **10x faster encoding**
+- **50% less browser memory**
+- **Negligible quality loss** (33 dB PSNR)
+- **Simple protocol** (single flag bit)
 
 This optimization significantly improves CDN delivery performance and reduces bandwidth costs while maintaining visually lossless reconstruction quality. The implementation is production-ready and backward-compatible with SAC v1.0 decoders.

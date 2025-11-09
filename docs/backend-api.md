@@ -74,15 +74,15 @@ This backend is designed to support **direct processor uploads** in the Artorize
 10. Router uses `id` to retrieve files when needed
 
 **Key Points**:
-- ✅ Secure token-based authentication (one-time use)
-- ✅ Per-artwork token isolation limits breach impact
-- ✅ All required files and metadata are supported
-- ✅ Returns `id` field that processor needs for callbacks
-- ✅ Handles large files (256MB max) efficiently
-- ✅ Rate limiting configured (30 uploads/hour per IP)
-- ✅ No temporary storage needed in router
-- ✅ Tokens expire after 1 hour (configurable)
-- ✅ Automatic cleanup of expired/used tokens
+- Secure token-based authentication (one-time use)
+- Per-artwork token isolation limits breach impact
+- All required files and metadata are supported
+- Returns `id` field that processor needs for callbacks
+- Handles large files (256MB max) efficiently
+- Rate limiting configured (30 uploads/hour per IP)
+- No temporary storage needed in router
+- Tokens expire after 1 hour (configurable)
+- Automatic cleanup of expired/used tokens
 
 **Security Architecture**:
 - Each artwork gets a unique 16-character token
