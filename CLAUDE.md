@@ -18,6 +18,11 @@ The `blockhash` library requires Python 3.12 or earlier (not compatible with Pyt
 # Main protection pipeline (auto-detects GPU, processes images from input/ to outputs/)
 py -3.12 -m artorize_runner.pipeline
 
+# Version and update commands
+py -3.12 -m artorize_runner.pipeline --version             # Show version and last update time
+py -3.12 -m artorize_runner.pipeline --no-update           # Skip automatic update check
+py -3.12 -m artorize_runner.cli --version                  # Show version info
+
 # Custom options
 py -3.12 -m artorize_runner.pipeline --workers 4           # Adjust parallel workers
 py -3.12 -m artorize_runner.pipeline --cpu-only            # Force CPU mode
@@ -30,6 +35,8 @@ py -3.12 -m artorize_runner.cli path\to\image.jpg --json-out report.json
 # Start HTTP gateway server (FastAPI on port 8765)
 py -3.12 -m artorize_gateway
 ```
+
+**Auto-Update**: The pipeline automatically checks for and applies updates from the git repository on each launch. This ensures the latest protection algorithms are always used. Use `--no-update` to skip the update check if needed.
 
 **Note**: The pipeline automatically detects GPU availability. If PyTorch with CUDA is installed,
 it will use GPU acceleration. Otherwise, it falls back to CPU mode seamlessly.
@@ -74,6 +81,8 @@ The codebase implements an image protection pipeline that applies multiple adver
   - `config.py`: Configuration management (JSON/TOML + environment variables)
   - `core.py`: Base processor abstractions and pipeline runner
   - `c2pa_metadata.py`: C2PA manifest embedding for provenance tracking
+  - `__version__.py`: Version tracking and metadata management
+  - `updater.py`: Self-update functionality with git integration
 
 - `processors/`: Reference protection algorithm implementations
   - `poison_mask/`: Dual-mask processor for reversible protection layering
