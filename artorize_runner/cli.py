@@ -44,11 +44,22 @@ def main(argv: List[str] | None = None) -> int:
             " and optional TinEye search."
         ),
     )
-    p.add_argument("image", help="Path to input image file")
+    p.add_argument("image", nargs="?", help="Path to input image file")
     p.add_argument("--json-out", help="Write aggregated JSON results to path")
     p.add_argument("--tineye", action="store_true", help="Enable TinEye search if API key is set")
+    p.add_argument("--version", action="store_true", help="Show version information and exit")
 
     args = p.parse_args(argv)
+
+    # Handle version flag
+    if args.version:
+        from .__version__ import format_version_info
+        print(format_version_info())
+        return 0
+
+    if not args.image:
+        p.error("the following arguments are required: image")
+        return 2
 
     if not os.path.isfile(args.image):
         print(f"error: not a file: {args.image}", file=sys.stderr)
