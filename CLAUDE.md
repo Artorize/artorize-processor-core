@@ -15,16 +15,14 @@ The `blockhash` library requires Python 3.12 or earlier (not compatible with Pyt
 
 ### Running the Pipeline
 ```powershell
-# Main protection pipeline (processes images from input/ to outputs/)
-py -3.12 -m artorize_runner.protection_pipeline
+# Main protection pipeline (auto-detects GPU, processes images from input/ to outputs/)
+py -3.12 -m artorize_runner.pipeline
 
-# GPU-accelerated pipeline with parallel processing
-py -3.12 -m artorize_runner.protection_pipeline_gpu
-
-# GPU pipeline with custom options
-py -3.12 -m artorize_runner.protection_pipeline_gpu --workers 4 --no-gpu  # Disable GPU
-py -3.12 -m artorize_runner.protection_pipeline_gpu --multiprocessing     # Use multiprocessing
-py -3.12 -m artorize_runner.protection_pipeline_gpu --no-analysis        # Skip hash analysis
+# Custom options
+py -3.12 -m artorize_runner.pipeline --workers 4           # Adjust parallel workers
+py -3.12 -m artorize_runner.pipeline --cpu-only            # Force CPU mode
+py -3.12 -m artorize_runner.pipeline --multiprocessing     # Use multiprocessing
+py -3.12 -m artorize_runner.pipeline --no-analysis         # Skip hash analysis
 
 # CLI for single image analysis
 py -3.12 -m artorize_runner.cli path\to\image.jpg --json-out report.json
@@ -32,6 +30,9 @@ py -3.12 -m artorize_runner.cli path\to\image.jpg --json-out report.json
 # Start HTTP gateway server (FastAPI on port 8765)
 py -3.12 -m artorize_gateway
 ```
+
+**Note**: The pipeline automatically detects GPU availability. If PyTorch with CUDA is installed,
+it will use GPU acceleration. Otherwise, it falls back to CPU mode seamlessly.
 
 ### Testing
 ```powershell

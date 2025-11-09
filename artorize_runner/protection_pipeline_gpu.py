@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import sys
 import time
@@ -12,6 +13,9 @@ from typing import Callable, Dict, List, Literal, Optional, Sequence, Tuple
 
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
+
+# Set up logger for this module
+logger = logging.getLogger(__name__)
 
 
 if __package__ in (None, ""):
@@ -28,14 +32,13 @@ try:
     import torchvision.transforms.functional as TF
     TORCH_AVAILABLE = True
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"PyTorch initialized with device: {DEVICE}")
+    logger.info(f"PyTorch initialized with device: {DEVICE}")
 except ImportError as exc:
     TORCH_AVAILABLE = False
     DEVICE = None
-    warnings.warn(
+    logger.warning(
         f"PyTorch stack not available ({exc}). GPU acceleration disabled. "
-        "Install torch/torchvision as described in README.md to enable GPU support.",
-        stacklevel=2,
+        "Install torch/torchvision as described in README.md to enable GPU support."
     )
 
 from .cli import build_processors
@@ -596,9 +599,9 @@ def run_full_workflow_parallel(
             try:
                 result = future.result()
                 outputs.append(result)
-                print(f"Processed: {futures[future].name}")
+                logger.info(f"Processed: {futures[future].name}")
             except Exception as e:
-                print(f"Error processing {futures[future]}: {e}")
+                logger.error(f"Error processing {futures[future]}: {e}")
 
     total_time = time.perf_counter() - start_time
 
@@ -611,9 +614,29 @@ def run_full_workflow_parallel(
     }
 
 
+def setup_logging() -> None:
+    """
+    Configure comprehensive logging for system service deployment.
+
+    Logs are formatted with timestamp, level, logger name, and message.
+    All logs go to stdout/stderr which are captured by systemd and
+    written to /var/log/artorize/runner.log and runner-error.log
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+        handlers=[
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+
+
 def main() -> None:
     """Main entry point with GPU and parallel processing."""
     import argparse
+
+    setup_logging()
 
     parser = argparse.ArgumentParser(description="Protection pipeline with GPU acceleration")
     parser.add_argument("--input-dir", default="input", help="Input directory")
@@ -625,6 +648,11 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    logger.info("Starting GPU protection pipeline")
+    logger.info(f"Configuration: input_dir={args.input_dir}, output_dir={args.output_dir}, "
+               f"workers={args.workers}, gpu={'disabled' if args.no_gpu else 'enabled'}, "
+               f"multiprocessing={args.multiprocessing}, analysis={'disabled' if args.no_analysis else 'enabled'}")
+
     result = run_full_workflow_parallel(
         input_dir=args.input_dir,
         output_root=args.output_dir,
@@ -634,6 +662,7 @@ def main() -> None:
         use_multiprocessing=args.multiprocessing
     )
 
+    logger.info("Pipeline processing completed")
     print(json.dumps(result, indent=2))
 
 

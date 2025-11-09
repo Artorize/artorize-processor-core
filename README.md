@@ -69,11 +69,11 @@ The requirements file already points pip to the official PyTorch wheel indices (
 
 ### Basic Usage
 ```powershell
-# Process images from input/ to outputs/
-py -3.12 -m artorize_runner.protection_pipeline
+# Process images from input/ to outputs/ (auto-detects GPU)
+py -3.12 -m artorize_runner.pipeline
 
-# GPU-accelerated processing
-py -3.12 -m artorize_runner.protection_pipeline_gpu
+# Force CPU mode (even if GPU available)
+py -3.12 -m artorize_runner.pipeline --cpu-only
 
 # Single image analysis
 py -3.12 -m artorize_runner.cli path\to\image.jpg --json-out report.json
@@ -82,13 +82,35 @@ py -3.12 -m artorize_runner.cli path\to\image.jpg --json-out report.json
 py -3.12 -m artorize_gateway
 ```
 
-### GPU Pipeline Checklist
-- Confirm you are using Python 3.12.x. On newer interpreters the PyTorch pins are skipped and the GPU pipeline will fall back to CPU mode.
-- Ensure CUDA 12.1 drivers (or the CPU-only PyTorch wheel) are available before installing `requirements.txt`.
-- If you see `PyTorch stack not available... GPU acceleration disabled`, reinstall PyTorch/torchvision following the quick start above and verify by running  
-  `py -3.12 -m artorize_runner.protection_pipeline_gpu --no-analysis --workers 1`.
-- The GPU script can also be invoked directly (`py -3.12 artorize_runner\protection_pipeline_gpu.py`) thanks to the updated import guards, though the `-m` module form is preferred.
-- For multi-GPU systems set `CUDA_VISIBLE_DEVICES` before launching the pipeline to target a specific device.
+**The pipeline automatically detects and uses GPU if available.** No manual configuration needed!
+
+### Advanced Options
+```powershell
+# Custom input/output directories
+py -3.12 -m artorize_runner.pipeline --input-dir custom_input --output-dir custom_output
+
+# Adjust parallel workers (default: auto)
+py -3.12 -m artorize_runner.pipeline --workers 4
+
+# Skip hash analysis for faster processing
+py -3.12 -m artorize_runner.pipeline --no-analysis
+
+# Use multiprocessing instead of threading
+py -3.12 -m artorize_runner.pipeline --multiprocessing
+```
+
+### GPU Support
+The pipeline automatically detects GPU availability and selects the optimal processing backend:
+
+- **GPU Available**: Uses CUDA-accelerated PyTorch for faster processing
+- **No GPU**: Falls back to CPU mode automatically
+- **Multi-GPU**: Set `CUDA_VISIBLE_DEVICES=0` to select a specific GPU
+
+**Installation Notes**:
+- Python 3.12.x is required (PyTorch and blockhash compatibility)
+- CUDA 12.1 drivers required for GPU acceleration
+- CPU-only mode works without CUDA drivers
+- All dependencies install automatically via `requirements.txt`
 
 ### Testing
 ```powershell

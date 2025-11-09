@@ -7,15 +7,19 @@ Core image protection pipeline module that processes images through multiple adv
 ### Command Line
 
 ```powershell
-# Main protection pipeline
-py -3 -m artorize_runner.protection_pipeline
+# Main protection pipeline (auto-detects GPU)
+py -3.12 -m artorize_runner.pipeline
 
-# GPU-accelerated pipeline
-py -3 -m artorize_runner.protection_pipeline_gpu --workers 4
+# Custom options
+py -3.12 -m artorize_runner.pipeline --workers 4       # Adjust parallel workers
+py -3.12 -m artorize_runner.pipeline --cpu-only        # Force CPU mode
+py -3.12 -m artorize_runner.pipeline --no-analysis     # Skip hash analysis
 
 # Single image analysis
-py -3 -m artorize_runner.cli path\to\image.jpg --json-out report.json
+py -3.12 -m artorize_runner.cli path\to\image.jpg --json-out report.json
 ```
+
+**The pipeline automatically detects GPU availability and uses the optimal backend.**
 
 ### Python API
 
