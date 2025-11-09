@@ -72,6 +72,13 @@ The requirements file already points pip to the official PyTorch wheel indices (
 # Process images from input/ to outputs/ (auto-detects GPU)
 py -3.12 -m artorize_runner.pipeline
 
+# Check version and last update time
+py -3.12 -m artorize_runner.pipeline --version
+py -3.12 -m artorize_runner.cli --version
+
+# Skip automatic update check (updates are applied on each launch by default)
+py -3.12 -m artorize_runner.pipeline --no-update
+
 # Force CPU mode (even if GPU available)
 py -3.12 -m artorize_runner.pipeline --cpu-only
 

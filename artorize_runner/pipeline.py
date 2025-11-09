@@ -92,6 +92,8 @@ def run_pipeline(
 def main() -> None:
     """Main entry point with automatic GPU detection."""
     import argparse
+    from .__version__ import format_version_info
+    from .updater import auto_update
 
     setup_logging()
 
@@ -104,8 +106,22 @@ def main() -> None:
     parser.add_argument("--multiprocessing", action="store_true", help="Use multiprocessing instead of threading")
     parser.add_argument("--no-analysis", action="store_true", help="Skip hash analysis")
     parser.add_argument("--cpu-only", action="store_true", help="Force CPU mode even if GPU is available")
+    parser.add_argument("--version", action="store_true", help="Show version information and exit")
+    parser.add_argument("--no-update", action="store_true", help="Skip automatic update check")
 
     args = parser.parse_args()
+
+    # Handle version flag
+    if args.version:
+        print(format_version_info())
+        sys.exit(0)
+
+    # Perform auto-update unless disabled
+    if not args.no_update:
+        try:
+            auto_update()
+        except Exception as e:
+            logger.warning(f"Auto-update failed: {e}")
 
     logger.info("Starting Artorize Protection Pipeline")
     logger.info(f"Configuration: input_dir={args.input_dir}, output_dir={args.output_dir}, "
