@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Literal
@@ -12,6 +14,9 @@ from PIL import Image, ImageEnhance, ImageFilter
 from .cli import build_processors
 from .core import run_pipeline, dumps_json
 from .utils import extend_sys_path
+
+# Set up logger for this module
+logger = logging.getLogger(__name__)
 
 try:
     from .c2pa_metadata import C2PAManifestConfig, embed_c2pa_manifest  # type: ignore
@@ -268,13 +273,13 @@ def _apply_poison_mask_if_enabled(
                 result_data["poison_mask_sac_lo_path"] = str(sac_lo_path.resolve())
             except Exception as sac_exc:
                 import traceback
-                print(f"Warning: SAC encoding failed for {stage_name}: {sac_exc}")
-                print(f"Traceback: {traceback.format_exc()}")
+                logger.warning(f"SAC encoding failed for {stage_name}: {sac_exc}")
+                logger.debug(f"Traceback: {traceback.format_exc()}")
 
         return result_data
 
     except Exception as exc:
-        print(f"Warning: Poison mask processing failed: {exc}")
+        logger.warning(f"Poison mask processing failed: {exc}")
         return None
 
 
@@ -586,8 +591,29 @@ def run_full_workflow(
     return {"processed": outputs}
 
 
+def setup_logging() -> None:
+    """
+    Configure comprehensive logging for system service deployment.
+
+    Logs are formatted with timestamp, level, logger name, and message.
+    All logs go to stdout/stderr which are captured by systemd and
+    written to /var/log/artorize/runner.log and runner-error.log
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+        handlers=[
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+
+
 def main() -> None:
+    setup_logging()
+    logger.info("Starting protection pipeline")
     result = run_full_workflow()
+    logger.info("Pipeline processing completed")
     print(json.dumps(result, indent=2))
 
 
