@@ -223,7 +223,7 @@ server {
 
 ## Documentation
 
-- **API Reference**: See `documentation-processor.md` for complete HTTP API documentation
+- **API Reference**: See `docs/API.md` for complete HTTP API documentation
 - **Development Guide**: See module-specific README files in subdirectories
 
 ## Development
