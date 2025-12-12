@@ -90,6 +90,63 @@ class CallbackClient:
 
         return False
 
+    async def send_progress_callback(
+        self,
+        callback_url: str,
+        auth_token: str,
+        payload: Dict[str, Any],
+    ) -> bool:
+        """
+        Send processing progress callback with retry logic.
+
+        Args:
+            callback_url: URL to send callback to
+            auth_token: Authorization token (e.g., "Bearer secret-token")
+            payload: JSON payload with progress information
+
+        Returns:
+            True if callback successful, False otherwise
+        """
+        headers = {
+            "Authorization": auth_token,
+            "Content-Type": "application/json",
+        }
+
+        for attempt in range(self.retry_attempts):
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        callback_url,
+                        json=payload,
+                        headers=headers,
+                        timeout=self.timeout,
+                    )
+                    if response.status_code == 200:
+                        logger.info(
+                            f"Progress callback successful for job {payload.get('job_id')} "
+                            f"(step {payload.get('step_number')}/{payload.get('total_steps')})"
+                        )
+                        return True
+
+                    logger.warning(
+                        f"Progress callback failed with status {response.status_code} "
+                        f"for job {payload.get('job_id')} (attempt {attempt + 1}/{self.retry_attempts})"
+                    )
+
+            except (httpx.TimeoutError, httpx.NetworkError) as e:
+                logger.error(
+                    f"Progress callback network error for job {payload.get('job_id')}: {e} "
+                    f"(attempt {attempt + 1}/{self.retry_attempts})"
+                )
+                if attempt < self.retry_attempts - 1:
+                    await asyncio.sleep(self.retry_delay)
+
+            except Exception as e:
+                logger.error(f"Unexpected progress callback error for job {payload.get('job_id')}: {e}")
+                return False
+
+        return False
+
     async def _store_failed_callback(self, payload: Dict[str, Any]) -> None:
         """
         Store failed callback in dead letter queue.

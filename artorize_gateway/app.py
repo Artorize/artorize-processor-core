@@ -126,6 +126,7 @@ class GatewayState:
     jobs: Dict[str, JobRecord]
     workers: List[asyncio.Task]
     callback_client: Optional[CallbackClient] = None
+    progress_callback_client: Optional[CallbackClient] = None
     storage_uploader: Optional[StorageUploader] = None
     backend_upload_client: Optional[BackendUploadClient] = None
 
@@ -257,6 +258,40 @@ def _process_job(job: JobRecord) -> JobResult:
         analysis_path=analysis_path,
         summary=summary,
         analysis=analysis_summary,
+    )
+
+
+async def _send_progress_callback(
+    job: JobRecord,
+    step: str,
+    step_number: int,
+    total_steps: int,
+    percentage: int,
+    state: GatewayState,
+    details: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Send progress callback to Router during job processing."""
+    if not job.callback_url or not job.callback_auth_token or not state.progress_callback_client:
+        return
+
+    # Derive progress callback URL by replacing "process-complete" with "process-progress"
+    progress_callback_url = job.callback_url.replace("process-complete", "process-progress")
+
+    # Build progress payload
+    payload = {
+        "job_id": job.job_id,
+        "current_step": step,
+        "step_number": step_number,
+        "total_steps": total_steps,
+        "percentage": percentage,
+        "details": details or {},
+    }
+
+    # Send progress callback
+    await state.progress_callback_client.send_progress_callback(
+        progress_callback_url,
+        job.callback_auth_token,
+        payload,
     )
 
 
@@ -559,8 +594,43 @@ async def _worker_loop(state: GatewayState) -> None:
             state.queue.task_done()
             continue
         job.touch(status=STATUS_RUNNING)
+
+        # Step 1: Starting metadata extraction
+        await _send_progress_callback(
+            job,
+            "Extracting image metadata",
+            1,
+            4,
+            25,
+            state,
+            {"status": "starting"},
+        )
+
         try:
+            # Step 2: Applying protection layers
+            await _send_progress_callback(
+                job,
+                "Applying protection layers",
+                2,
+                4,
+                50,
+                state,
+                {"status": "processing"},
+            )
+
             result = await asyncio.to_thread(_process_job, job)
+
+            # Step 3: Uploading to backend
+            await _send_progress_callback(
+                job,
+                "Uploading to backend",
+                3,
+                4,
+                75,
+                state,
+                {"status": "uploading"},
+            )
+
         except Exception as exc:  # noqa: BLE001
             job.touch(status=STATUS_ERROR, error=str(exc))
             # Send callback if enabled
@@ -669,6 +739,9 @@ def create_app(config: Optional[GatewayConfig] = None) -> FastAPI:
         retry_attempts=cfg.callback_retry_attempts,
         retry_delay=cfg.callback_retry_delay,
     )
+
+    # Initialize progress callback client (reuse same instance)
+    state.progress_callback_client = state.callback_client
 
     # Initialize storage uploader
     state.storage_uploader = StorageUploader(
