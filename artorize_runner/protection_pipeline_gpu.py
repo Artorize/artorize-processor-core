@@ -331,7 +331,8 @@ def _apply_layers_batched(
     image_path: Path,
     target_dir: Path,
     config: ProtectionWorkflowConfig,
-    use_gpu: bool = True
+    use_gpu: bool = True,
+    progress_callback: Optional[Callable[[str, int, int], None]] = None
 ) -> List[Dict[str, object]]:
     """Apply protection layers with optional GPU acceleration."""
     original = Image.open(image_path)
@@ -420,6 +421,10 @@ def _apply_layers_batched(
         stages.append(stage_data)
         last_stage_path = stage_path
         previous_saved = saved_image.convert("RGB")
+
+        # Send progress callback after stage completion
+        if progress_callback:
+            progress_callback(stage.key, index, len(stage_sequence))
 
     # Handle C2PA manifest if enabled
     if config.enable_c2pa_manifest:

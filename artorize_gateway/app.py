@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import aiofiles
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, UploadFile
@@ -37,6 +37,15 @@ STATUS_QUEUED = "queued"
 STATUS_RUNNING = "running"
 STATUS_DONE = "done"
 STATUS_ERROR = "error"
+
+
+@dataclass
+class ProgressCallbackConfig:
+    """Configuration for progress callbacks from within processing threads."""
+    callback_url: str
+    auth_token: str
+    job_id: str
+    callback_client: CallbackClient
 
 
 @dataclass
@@ -186,6 +195,32 @@ class ProcessArtworkResponse(BaseModel):
     message: str
 
 
+def _send_stage_progress(
+    config: Optional[ProgressCallbackConfig],
+    step_name: str,
+    step_number: int,
+    total_steps: int,
+    details: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Send progress callback for a specific processing stage (sync, for use in threads)."""
+    if not config:
+        return
+
+    progress_url = config.callback_url.replace("process-complete", "process-progress")
+    percentage = int((step_number / total_steps) * 100)
+
+    payload = {
+        "job_id": config.job_id,
+        "current_step": step_name,
+        "step_number": step_number,
+        "total_steps": total_steps,
+        "percentage": percentage,
+        "details": details or {},
+    }
+
+    config.callback_client.send_progress_callback_sync(progress_url, config.auth_token, payload)
+
+
 def _filter_processors(processors: List[BaseProcessor], allowed: Optional[Sequence[str]]) -> List[BaseProcessor]:
     if not allowed:
         return processors
@@ -213,7 +248,42 @@ def _ensure_original_layer(image_path: Path, target_dir: Path) -> Dict[str, obje
     }
 
 
-def _process_job(job: JobRecord) -> JobResult:
+def _calculate_total_steps(job: JobRecord, workflow_config: ProtectionWorkflowConfig) -> int:
+    """Calculate total steps for progress tracking based on workflow config."""
+    total = 0
+
+    # Analysis step
+    if job.include_hash_analysis:
+        total += 1
+
+    if job.include_protection:
+        # Protection layers
+        if workflow_config.enable_fawkes:
+            total += 1
+        if workflow_config.enable_photoguard:
+            total += 1
+        if workflow_config.enable_mist:
+            total += 1
+        if workflow_config.enable_nightshade:
+            total += 1
+
+        # Watermark strategy
+        if workflow_config.watermark_strategy in ("invisible-watermark", "tree-ring"):
+            total += 1
+
+        # Optional stages
+        if workflow_config.enable_stegano_embed:
+            total += 1
+        if workflow_config.enable_c2pa_manifest:
+            total += 1
+
+    # Upload step (always present when callback is configured)
+    total += 1
+
+    return max(total, 1)
+
+
+def _process_job(job: JobRecord, progress_config: Optional[ProgressCallbackConfig] = None) -> JobResult:
     extend_sys_path()
     output_root = job.output_root
     image_path = job.input_path
@@ -224,9 +294,22 @@ def _process_job(job: JobRecord) -> JobResult:
         shutil.rmtree(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
 
+    # Calculate total steps for progress tracking
+    workflow_config = ProtectionWorkflowConfig()
+    total_steps = _calculate_total_steps(job, workflow_config)
+    current_step = 0
+
     analysis_summary: Optional[Dict[str, object]] = None
     analysis_path: Optional[Path] = None
     if job.include_hash_analysis:
+        current_step += 1
+        _send_stage_progress(
+            progress_config,
+            "Analyzing image metadata",
+            current_step,
+            total_steps,
+            {"status": "analyzing"}
+        )
         processors = build_processors(include_tineye=job.enable_tineye)
         processors = _filter_processors(processors, job.processors)
         analysis_summary = run_pipeline(str(image_path), processors)
@@ -234,10 +317,32 @@ def _process_job(job: JobRecord) -> JobResult:
         analysis_path.write_text(dumps_json(analysis_summary), encoding="ascii")
 
     if job.include_protection:
+        # Create progress callback wrapper for pipeline
+        def pipeline_progress_callback(stage_key: str, step_num: int, total_stages: int) -> None:
+            nonlocal current_step
+            current_step += 1
+            stage_name_map = {
+                "fawkes": "Processing Fawkes protection",
+                "photoguard": "Processing PhotoGuard protection",
+                "mist": "Processing Mist protection",
+                "nightshade": "Processing Nightshade protection",
+                "invisible-watermark": "Applying invisible watermark",
+                "tree-ring": "Applying tree-ring watermark",
+                "stegano-embed": "Embedding steganographic data",
+                "c2pa-manifest": "Embedding C2PA manifest",
+            }
+            stage_display_name = stage_name_map.get(stage_key, f"Processing {stage_key}")
+            _send_stage_progress(
+                progress_config,
+                stage_display_name,
+                current_step,
+                total_steps,
+                {"stage": stage_key, "status": "processing"}
+            )
+
         # Use GPU pipeline by default for better performance
-        workflow_config = ProtectionWorkflowConfig()
         stage_records: List[Dict[str, object]] = _apply_layers_batched(
-            image_path, target_dir, workflow_config, use_gpu=True
+            image_path, target_dir, workflow_config, use_gpu=True, progress_callback=pipeline_progress_callback
         )
     else:
         stage_records = [_ensure_original_layer(image_path, target_dir)]
@@ -252,46 +357,22 @@ def _process_job(job: JobRecord) -> JobResult:
     summary_path = target_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2), encoding="ascii")
 
+    # Send final progress callback for upload step
+    current_step += 1
+    _send_stage_progress(
+        progress_config,
+        "Preparing upload to backend",
+        current_step,
+        total_steps,
+        {"status": "finalizing"}
+    )
+
     return JobResult(
         output_dir=target_dir,
         summary_path=summary_path,
         analysis_path=analysis_path,
         summary=summary,
         analysis=analysis_summary,
-    )
-
-
-async def _send_progress_callback(
-    job: JobRecord,
-    step: str,
-    step_number: int,
-    total_steps: int,
-    percentage: int,
-    state: GatewayState,
-    details: Optional[Dict[str, Any]] = None,
-) -> None:
-    """Send progress callback to Router during job processing."""
-    if not job.callback_url or not job.callback_auth_token or not state.progress_callback_client:
-        return
-
-    # Derive progress callback URL by replacing "process-complete" with "process-progress"
-    progress_callback_url = job.callback_url.replace("process-complete", "process-progress")
-
-    # Build progress payload
-    payload = {
-        "job_id": job.job_id,
-        "current_step": step,
-        "step_number": step_number,
-        "total_steps": total_steps,
-        "percentage": percentage,
-        "details": details or {},
-    }
-
-    # Send progress callback
-    await state.progress_callback_client.send_progress_callback(
-        progress_callback_url,
-        job.callback_auth_token,
-        payload,
     )
 
 
@@ -595,41 +676,18 @@ async def _worker_loop(state: GatewayState) -> None:
             continue
         job.touch(status=STATUS_RUNNING)
 
-        # Step 1: Starting metadata extraction
-        await _send_progress_callback(
-            job,
-            "Extracting image metadata",
-            1,
-            4,
-            25,
-            state,
-            {"status": "starting"},
-        )
-
         try:
-            # Step 2: Applying protection layers
-            await _send_progress_callback(
-                job,
-                "Applying protection layers",
-                2,
-                4,
-                50,
-                state,
-                {"status": "processing"},
-            )
+            # Create progress config for granular callbacks
+            progress_config = None
+            if job.callback_url and job.callback_auth_token and state.callback_client:
+                progress_config = ProgressCallbackConfig(
+                    callback_url=job.callback_url,
+                    auth_token=job.callback_auth_token,
+                    job_id=job.job_id,
+                    callback_client=state.callback_client,
+                )
 
-            result = await asyncio.to_thread(_process_job, job)
-
-            # Step 3: Uploading to backend
-            await _send_progress_callback(
-                job,
-                "Uploading to backend",
-                3,
-                4,
-                75,
-                state,
-                {"status": "uploading"},
-            )
+            result = await asyncio.to_thread(_process_job, job, progress_config)
 
         except Exception as exc:  # noqa: BLE001
             job.touch(status=STATUS_ERROR, error=str(exc))

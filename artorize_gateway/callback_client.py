@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Dict
 
 import httpx
@@ -145,6 +146,49 @@ class CallbackClient:
                 logger.error(f"Unexpected progress callback error for job {payload.get('job_id')}: {e}")
                 return False
 
+        return False
+
+    def send_progress_callback_sync(
+        self,
+        callback_url: str,
+        auth_token: str,
+        payload: Dict[str, Any],
+    ) -> bool:
+        """
+        Synchronous version for use in threaded contexts.
+
+        Args:
+            callback_url: URL to send callback to
+            auth_token: Authorization token (e.g., "Bearer secret-token")
+            payload: JSON payload with progress information
+
+        Returns:
+            True if callback successful, False otherwise
+        """
+        headers = {
+            "Authorization": auth_token,
+            "Content-Type": "application/json",
+        }
+
+        for attempt in range(self.retry_attempts):
+            try:
+                response = httpx.post(
+                    callback_url,
+                    json=payload,
+                    headers=headers,
+                    timeout=self.timeout,
+                )
+                if response.status_code == 200:
+                    logger.info(
+                        f"Progress callback successful for job {payload.get('job_id')} "
+                        f"(step {payload.get('step_number')}/{payload.get('total_steps')})"
+                    )
+                    return True
+                logger.warning(f"Progress callback failed with status {response.status_code}")
+            except Exception as e:
+                logger.error(f"Progress callback error: {e}")
+                if attempt < self.retry_attempts - 1:
+                    time.sleep(self.retry_delay)
         return False
 
     async def _store_failed_callback(self, payload: Dict[str, Any]) -> None:
