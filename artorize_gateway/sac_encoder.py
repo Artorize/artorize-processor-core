@@ -156,7 +156,7 @@ def encode_mask_pair_from_images(
         width=width,
         height=height,
         length_a=len(a_flat),
-        length_b=len(b_flat),
+        length_b=len(a_flat),
     )
 
 
